@@ -484,6 +484,16 @@ function SelectField({
   );
 }
 
+// Search compares words, not the raw string. Dealer labels carry an em dash
+// ("NAME — CITY") nobody can type on a phone, and city spellings arrive with
+// and without diacritics (Hosur / Hosūr). A plain substring match showed reps an
+// empty list for a dealer that was there, so they added it again — every word
+// they typed just has to appear somewhere, in any order.
+const searchText = (s: string) =>
+  " " + s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ").trim() + " ";
+const searchWords = (q: string) => searchText(q).split(" ").filter(Boolean);
+
 /** Type-to-filter combobox. Falls back to plain free text when no options exist. */
 function SearchableField({
   label, required, options, value, onChange, placeholder, disabled, hint, loading,
@@ -507,8 +517,10 @@ function SearchableField({
   // Show the committed value until the user starts typing a new search.
   const shown = open ? query : value;
   const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const list = q ? options.filter((o) => o.toLowerCase().includes(q)) : options;
+    const words = searchWords(query);
+    const list = words.length
+      ? options.filter((o) => { const t = searchText(o); return words.every((w) => t.includes(w)); })
+      : options;
     return list.slice(0, 50);
   }, [options, query]);
 
@@ -608,19 +620,40 @@ function DerivedCity({ city }: { city: string }) {
 // be told apart from another outlet of the same group, which is exactly the
 // ambiguity this list exists to remove.
 function AddDealerPanel({
-  oem, state, cities, citiesLoading, onAdd, onClose,
+  oem, state, cities, citiesLoading, existing, onAdd, onPick, onClose,
 }: {
   oem: string; state: string; cities: string[]; citiesLoading?: boolean;
-  onAdd: (name: string, city: string) => Promise<void>; onClose: () => void;
+  existing: DealerOption[];
+  onAdd: (name: string, city: string) => Promise<void>;
+  onPick: (label: string) => void; onClose: () => void;
 }) {
   const [name, setName] = useState("");
   const [city, setCity] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
+  // Dealers already listed for this OEM + state whose name contains what the rep
+  // is typing. Shown before they save, because the usual reason a rep opens
+  // this panel is a search that missed a dealer that was there — and a second
+  // row with a different city spelling splits that outlet's visits in two.
+  const similar = useMemo(() => {
+    const words = searchWords(name).filter((w) => w.length >= 3);
+    if (!words.length) return [];
+    return existing
+      .filter((o) => { const t = searchText(o.name); return words.some((w) => t.includes(w)); })
+      .slice(0, 6);
+  }, [existing, name]);
+
+  const use = (o: DealerOption) => { onPick(dealerLabel(o)); onClose(); };
+
   const submit = async () => {
     if (!name.trim()) { setErr("Enter the dealership name."); return; }
     if (!city.trim()) { setErr("Pick the city this dealership is in."); return; }
+    // Same name and same city however it is spelt or accented: that is the
+    // listed dealer, so use it rather than asking the server to add it.
+    const same = existing.find((o) => searchText(o.name) === searchText(name)
+      && searchText(o.city) === searchText(city));
+    if (same) { use(same); return; }
     setSaving(true);
     setErr("");
     try {
@@ -659,6 +692,22 @@ function AddDealerPanel({
           autoFocus
         />
       </div>
+      {similar.length > 0 && (
+        <div className="rounded-xl border border-orange-200 bg-white p-3 flex flex-col gap-1.5">
+          <p className="text-sm font-semibold text-gray-700">Already in the list — is it one of these?</p>
+          <p className="text-xs text-gray-500">Tap one to use it. Only add a new one for a different outlet.</p>
+          {similar.map((o) => (
+            <button
+              key={dealerLabel(o)}
+              type="button"
+              onClick={() => use(o)}
+              className="text-left px-3 py-2.5 rounded-lg text-base text-gray-700 bg-orange-50/60 active:bg-orange-100"
+            >
+              {dealerLabel(o)}
+            </button>
+          ))}
+        </div>
+      )}
       <SearchableField
         label={FIELD_LABELS.city}
         required
@@ -1155,7 +1204,9 @@ export default function VisitLogFormPage() {
                           state={form.state}
                           cities={cities}
                           citiesLoading={citiesLoading}
+                          existing={dealershipOptions}
                           onAdd={addDealer}
+                          onPick={pickDealer}
                           onClose={() => setAddingDealer(false)}
                         />
                       )}

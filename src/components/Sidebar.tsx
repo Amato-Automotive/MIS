@@ -9,6 +9,7 @@ import {
   Wallet,
   FileSpreadsheet,
   CarFront,
+  Globe2,
 } from "lucide-react";
 import { useAuth, UserRole } from "@/context/AuthContext";
 import { ModuleKey, canAccessModule } from "@/lib/modules";
@@ -60,6 +61,13 @@ const NAV_ITEMS: NavItem[] = [
     icon: <CarFront size={16} />,
     path: "/dashboard/oe-network",
     moduleKey: "oe_network",
+  },
+  {
+    id: "export",
+    label: "Export",
+    icon: <Globe2 size={16} />,
+    path: "/dashboard/export",
+    moduleKey: "export",
   },
   {
     id: "users",

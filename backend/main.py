@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from routers import auth, leads, users, sales, distributor_sales, finance, sheets, oe_network, oe_targets, oe_oem_targets, visit_log, asm_portal
+from routers import auth, leads, users, sales, distributor_sales, finance, sheets, oe_network, oe_targets, oe_oem_targets, visit_log, asm_portal, export
 
 load_dotenv()
 
@@ -36,6 +36,7 @@ app.include_router(sheets.router)
 app.include_router(oe_network.router)
 app.include_router(oe_targets.router)
 app.include_router(oe_oem_targets.router)
+app.include_router(export.router)
 app.include_router(visit_log.router)  # public — no auth (shared form link)
 app.include_router(asm_portal.router)  # public — OTP-only, scoped to caller's own salesperson
 

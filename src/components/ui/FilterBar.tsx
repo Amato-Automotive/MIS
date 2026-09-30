@@ -108,6 +108,10 @@ export const FILTER_LABELS = {
   product:     { placeholder: "Product",     all: "All products" },
   mode:        { placeholder: "Mode",        all: "Visits + Calls" },
   company:     { placeholder: "Company",     all: "All companies" },
+  country:     { placeholder: "Country",     all: "All countries" },
+  customerType:{ placeholder: "Customer type", all: "All customer types" },
+  stage:       { placeholder: "Stage",       all: "All stages" },
+  status:      { placeholder: "Status",      all: "All statuses" },
 } as const;
 
 /** The `<Select>` options for a filter: the "all" row first, then the values. */

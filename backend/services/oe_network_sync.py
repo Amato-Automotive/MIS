@@ -23,6 +23,7 @@ import re
 from datetime import date, timedelta
 from typing import Optional
 
+from services.dealer_resolve import canon_city
 from services.google_sheets import get_sheets_service, SHEETS_RETRIES
 
 # Google Sheets serial-number epoch (UNFORMATTED_VALUE renders dates as serials).
@@ -257,7 +258,7 @@ def parse_visit_plan(sheet_id: str, plan_year: int, plan_month: int):
                 "visit_date": visit_date,
                 "oem": _cut(_upper(cell(line, c_oem)), 50),
                 "dealer_name": _cut(dealer, 200),
-                "city": _cut(_clean(cell(line, c_city)), 100),
+                "city": _cut(canon_city(_clean(cell(line, c_city))) or None, 100),
                 "state": _cut(normalize_state(cell(line, c_state)), 100),
                 "plan_year": plan_year,
                 "plan_month": plan_month,
@@ -330,7 +331,9 @@ def parse_log_book(sheet_id: str):
             "channel": _cut(_clean(cell(line, "channel")), 20),
             "email": _cut(_clean(cell(line, "email")), 150),
             "photo_link": _clean(cell(line, "photo_link")),
-            "city": _cut(_clean(cell(line, "city")), 100),
+            # Canonical on the way in, so the sheet's mix of Bhopāl / Bhopal /
+            # BHOPAL lands as one city without anyone editing the sheet.
+            "city": _cut(canon_city(_clean(cell(line, "city"))) or None, 100),
             "state": _cut(normalize_state(cell(line, "state")), 100),
             "sheet_row": r,
         })

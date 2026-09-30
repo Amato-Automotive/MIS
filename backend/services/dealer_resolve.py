@@ -117,6 +117,19 @@ def _strip_accents(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
 
 
+def canon_city(s: Optional[str]) -> str:
+    """The one spelling a city is STORED under: accents off, spaces collapsed,
+    upper case. "Bhopāl", "Bhopal" and "BHOPAL" all become BHOPAL.
+
+    The form's city list comes from a geo API that returns diacritics, while
+    the older rows and the OEM dealer file are plain upper case, so one city
+    reached the tables three ways and every city breakdown split it three ways.
+    Unlike norm_city this keeps punctuation and applies no aliases — it decides
+    what is displayed, not what matches.
+    """
+    return " ".join(_strip_accents(s or "").upper().split())
+
+
 def norm_name(s: Optional[str]) -> str:
     """Fold a dealership name to what actually identifies it.
 

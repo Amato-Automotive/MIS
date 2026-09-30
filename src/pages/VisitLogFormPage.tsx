@@ -9,6 +9,8 @@
  * Conditional behaviour (per spec):
  *   • Mats Sales  — every OEM except MSIL (MSIL reports channel instead)
  *   • Photo       — only when the contact mode is "Visit" (gallery only)
+ *   • Additional photos — two optional slots, always shown, tied to nothing
+ *                   (a complaint, a damaged product…); own sheet columns Y/Z
  *   • Email       — derived from the chosen name, submitted silently
  *   • City        — filtered by the chosen State
  *   • Dealership  — searchable, filtered by State
@@ -731,6 +733,42 @@ function AddDealerPanel({
   );
 }
 
+// ─── Additional photo slot ─────────────────────────────────────────────────
+function ExtraPhotoSlot({ file, onChange }: { file: File | null; onChange: (f: File | null) => void }) {
+  const [preview, setPreview] = useState<string | null>(null);
+  useEffect(() => {
+    if (!file) { setPreview(null); return; }
+    const url = URL.createObjectURL(file);
+    setPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  return preview ? (
+    <div className="relative h-32 rounded-2xl overflow-hidden border border-gray-200">
+      <img src={preview} alt="Selected" className="w-full h-full object-cover" />
+      <button
+        type="button"
+        onClick={() => onChange(null)}
+        className="absolute top-2 right-2 h-9 w-9 rounded-full bg-black/60 text-white flex items-center justify-center active:bg-black/80"
+        aria-label="Remove photo"
+      >
+        <X size={16} />
+      </button>
+    </div>
+  ) : (
+    <label className="flex flex-col items-center justify-center gap-2 h-32 rounded-2xl border-2 border-dashed border-gray-200 active:border-orange-300 active:bg-orange-50/40 transition-colors cursor-pointer">
+      <ImagePlus size={20} className="text-gray-500" />
+      <span className="text-sm text-gray-500 font-medium">Add photo</span>
+      <input
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => onChange(e.target.files?.[0] ?? null)}
+      />
+    </label>
+  );
+}
+
 // ─── Splash ──────────────────────────────────────────────────────────────────
 function Splash() {
   return (
@@ -778,6 +816,7 @@ export default function VisitLogFormPage() {
 
   const [photo, setPhoto] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [extraPhotos, setExtraPhotos] = useState<(File | null)[]>([null, null]);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
@@ -833,7 +872,12 @@ export default function VisitLogFormPage() {
     fetch(GEO_CITIES_URL + encodeURIComponent(form.state))
       .then((r) => r.json())
       .then((j) => {
-        if (alive) setCities(Array.isArray(j?.data) ? j.data : []);
+        // The geo API spells cities with diacritics (Bhopāl, Guntūr); everything
+        // else stores them plain upper case. Fold here so a rep picks the same
+        // string the dealer list and the older rows use.
+        const plain = (Array.isArray(j?.data) ? j.data as string[] : []).map((c) =>
+          c.normalize("NFD").replace(/\p{M}/gu, "").replace(/\s+/g, " ").trim().toUpperCase());
+        if (alive) setCities([...new Set(plain)]);
       })
       .catch(() => { if (alive) setCities([]); })
       .finally(() => { if (alive) setCitiesLoading(false); });
@@ -997,6 +1041,7 @@ export default function VisitLogFormPage() {
       // (the backend maps by these exact keys). Unselected categories send "".
       REMARK_CATEGORIES.forEach((c) => body.append(`remark_${remarkKey(c)}`, remarks[c] ?? ""));
       if (photo) body.append("photo", photo);
+      extraPhotos.forEach((f, i) => { if (f) body.append(`extra_photo_${i + 1}`, f); });
 
       const res = await fetch(`${API_URL}/visit-log/submit`, { method: "POST", body });
       if (!res.ok) {
@@ -1017,6 +1062,7 @@ export default function VisitLogFormPage() {
     setForm({ ...EMPTY, visit_date: todayISO() });
     setRemarks({});
     setPhoto(null);
+    setExtraPhotos([null, null]);
     setSubmitted(false);
     setError("");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1412,6 +1458,23 @@ export default function VisitLogFormPage() {
                   </motion.div>
                 )}
               </AnimatePresence>
+
+              {/* ── Additional photos: optional, independent of Visit/Calling ── */}
+              <Section title="Additional photos" icon={<ImagePlus size={14} />}>
+                <p className="text-sm text-gray-500 mb-3">
+                  Optional — up to two.
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  {extraPhotos.map((f, i) => (
+                    <ExtraPhotoSlot
+                      key={i}
+                      file={f}
+                      onChange={(next) =>
+                        setExtraPhotos((p) => p.map((x, j) => (j === i ? next : x)))}
+                    />
+                  ))}
+                </div>
+              </Section>
 
               <p className="text-center text-[10px] text-gray-500 uppercase tracking-wider">
                 © {new Date().getFullYear()} Amato Automotive

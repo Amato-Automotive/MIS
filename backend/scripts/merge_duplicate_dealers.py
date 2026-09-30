@@ -23,6 +23,11 @@ then form; then the one with more visits; then the oldest. Its visits keep their
 row; the duplicate's visits are moved onto it and the duplicate is deleted. A
 duplicate carrying sales or targets is never deleted (it would cascade them).
 
+After merging, every surviving row's city is rewritten to its canonical
+spelling (dealer_resolve.canon_city: no accents, upper case), matching what the
+form and the log-book sync now store. A rename that would collide with another
+row is skipped and reported rather than forced.
+
     python -m scripts.merge_duplicate_dealers            # dry run, report only
     python -m scripts.merge_duplicate_dealers --apply    # merge, one transaction
 
@@ -39,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlalchemy import text
 
 from database import SessionLocal
-from services.dealer_resolve import _strip_accents, norm_city, norm_name
+from services.dealer_resolve import _strip_accents, canon_city, norm_city, norm_name
 
 # Above dealer_resolve's 0.82 on purpose: that threshold picks between cities a
 # name already has, this one decides two rows are the same place and deletes
@@ -59,8 +64,14 @@ def _plain(city: str) -> str:
 def same_place(a: str, b: str) -> bool:
     if not a or not b:
         return False  # a city-less row is a different problem; leave it
-    return any(x == y or SequenceMatcher(None, x, y).ratio() >= CITY_TYPO
-               for x, y in ((norm_city(a), norm_city(b)), (_plain(a), _plain(b))))
+    if norm_city(a) == norm_city(b):
+        return True  # same place by the resolver's own rules (accents, renames)
+    # A typo is judged on the spelling as typed, never after the alias fold:
+    # Bengaluru folds to BANGALORE, which is one letter from MANGALORE — a
+    # different city 350 km away. And typos keep the first letter; real
+    # neighbours that differ in one letter usually don't (Mangalore/Bangalore).
+    x, y = _plain(a), _plain(b)
+    return x[:1] == y[:1] and SequenceMatcher(None, x, y).ratio() >= CITY_TYPO
 
 
 def main() -> None:
@@ -111,8 +122,23 @@ def main() -> None:
             else:
                 merges.append((home, r))
 
-    if not merges:
-        print("No duplicate outlets found.")
+    gone = {d["id"] for _k, d in merges}
+    survivors = [r for r in rows if r["id"] not in gone]
+    taken = {(r["oem"].upper(), r["state"].upper(), r["name"].upper(),
+              r["city"].upper(), r["code"].upper()) for r in survivors}
+    renames, clashes = [], []  # (row, new city)
+    for r in survivors:
+        new = canon_city(r["city"])
+        if not new or new == r["city"]:
+            continue
+        key = (r["oem"].upper(), r["state"].upper(), r["name"].upper(), new, r["code"].upper())
+        if new != r["city"].upper() and key in taken:
+            clashes.append((r, new))
+        else:
+            renames.append((r, new))
+
+    if not merges and not renames:
+        print("Nothing to do: no duplicate outlets, every city already canonical.")
         return
 
     print(f"{len(merges)} duplicate row(s) to fold:\n")
@@ -120,6 +146,15 @@ def main() -> None:
         print(f"  {k['oem']:<8} {k['state']:<16} {k['name']}")
         print(f"      keep  {k['city']:<20} [{k['source']}, {k['visits']} visits]")
         print(f"      fold  {d['city']:<20} [{d['source']}, {d['visits']} visits]")
+
+    accented = [(r, n) for r, n in renames if _strip_accents(r["city"]) != r["city"]]
+    print(f"\n{len(renames)} city spelling(s) to canonicalise "
+          f"({len(renames) - len(accented)} case only). Accented ones:")
+    for r, n in accented:
+        print(f"  {r['oem']:<8} {r['name']}: {r['city']} -> {n}")
+    for r, n in clashes:
+        print(f"  SKIPPED (another row already holds {n}): {r['oem']} {r['state']} "
+              f"{r['name']} / {r['city']}")
 
     if not args.apply:
         print("\nDRY RUN — nothing written. Re-run with --apply.")
@@ -132,11 +167,15 @@ def main() -> None:
                        {"keep": k["id"], "gone": d["id"]})
             db.execute(text("DELETE FROM oe_dealerships WHERE id = CAST(:gone AS uuid)"),
                        {"gone": d["id"]})
+        for r, new in renames:
+            db.execute(text("UPDATE oe_dealerships SET city = :city, updated_at = NOW() "
+                            "WHERE id = CAST(:id AS uuid)"), {"city": new, "id": r["id"]})
         db.commit()
     except Exception:
         db.rollback()
         raise
-    print(f"\nMerged {len(merges)} row(s). Now run: "
+    print(f"\nMerged {len(merges)} row(s), canonicalised {len(renames)} city "
+          "spelling(s). Now run: "
           "python -m scripts.resolve_visit_log_dealers --apply")
 
 

@@ -25,6 +25,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import get_db
+from services.dealer_resolve import canon_city
 from services.google_sheets import get_sheets_service_rw, upload_photo_to_folder
 
 router = APIRouter(prefix="/visit-log", tags=["OE Visit Log"])
@@ -161,7 +162,13 @@ def submit_visit_log(
     remark_sales: str = Form(""),
     remark_others: str = Form(""),
     photo: UploadFile | None = File(None),
+    # Two free-standing photos (a complaint, a damaged product…). Optional and
+    # not tied to Visit/Calling or any remark — they go to their own columns.
+    extra_photo_1: UploadFile | None = File(None),
+    extra_photo_2: UploadFile | None = File(None),
 ):
+    # The form already strips accents; this also covers a stale cached copy.
+    city = canon_city(city)
     sheet_id = os.getenv("VISIT_LOG_SHEET_ID")
     if not sheet_id:
         raise HTTPException(status_code=503, detail="VISIT_LOG_SHEET_ID is not configured.")
@@ -176,22 +183,27 @@ def submit_visit_log(
     # its own. While off, the row is still saved with column L blank rather than
     # failing the whole submission; once on, an upload error surfaces to the rep.
     photos_enabled = (os.getenv("VISIT_LOG_PHOTOS_ENABLED", "").lower() in ("1", "true", "yes"))
-    photo_link = ""
-    if photos_enabled and photo is not None and photo.filename:
+    safe_person = (salesperson or "unknown").replace("/", "-").strip()
+
+    def upload(f: UploadFile | None, tag: str) -> str:
+        if not (photos_enabled and f is not None and f.filename):
+            return ""
         folder_id = os.getenv("VISIT_LOG_DRIVE_FOLDER_ID")
         if not folder_id:
             raise HTTPException(status_code=503, detail="VISIT_LOG_DRIVE_FOLDER_ID is not configured.")
         try:
-            data = photo.file.read()
-            safe_person = (salesperson or "unknown").replace("/", "-").strip()
-            fname = f"{now.strftime('%Y%m%d_%H%M%S')}_{safe_person}_{photo.filename}"
-            photo_link = upload_photo_to_folder(data, fname, photo.content_type or "", folder_id)
+            fname = f"{now.strftime('%Y%m%d_%H%M%S')}_{safe_person}{tag}_{f.filename}"
+            return upload_photo_to_folder(f.file.read(), fname, f.content_type or "", folder_id)
         except HttpError as e:
             raise HTTPException(status_code=502, detail=f"Could not upload the photo: {e}")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Photo upload failed: {e}")
 
-    # A..X, matching the LIVE log-book header order exactly (24 columns). Each
+    photo_link = upload(photo, "")
+    extra_link_1 = upload(extra_photo_1, "_extra1")
+    extra_link_2 = upload(extra_photo_2, "_extra2")
+
+    # A..Z, matching the LIVE log-book header order exactly (26 columns). Each
     # remark category has its own column (L-O); the generic "Remarks" column (K)
     # is left blank now that categories are split out. "Total Car Sales / Total
     # Seat Covers" wording differs from the form's labels but positions match.
@@ -220,6 +232,8 @@ def submit_visit_log(
         city,                            # V City
         state,                           # W State
         month_abbr,                      # X Column 1 (month abbrev, e.g. "Jul")
+        extra_link_1,                    # Y Additional Photo 1 (Drive link, or "")
+        extra_link_2,                    # Z Additional Photo 2 (Drive link, or "")
     ]
 
     try:
@@ -262,7 +276,9 @@ def submit_visit_log(
                 ("Sales", remark_sales),
                 ("Others", remark_others),
                 ("Photo", photo_link),
-            ], link_labels={"Photo"})
+                ("Additional Photo 1", extra_link_1),
+                ("Additional Photo 2", extra_link_2),
+            ], link_labels={"Photo", "Additional Photo 1", "Additional Photo 2"})
         except Exception:
             pass  # confirmation email is a courtesy, not a requirement
 
@@ -330,7 +346,7 @@ def add_dealership(
          city-less one;
       3. otherwise it is a genuinely new outlet → insert it.
     """
-    oem, state, name, city = _clean(oem), _clean(state), _clean(name), _clean(city)
+    oem, state, name, city = _clean(oem), _clean(state), _clean(name), canon_city(city)
     if not oem or not state or not name:
         raise HTTPException(status_code=422, detail="OEM, state and dealership name are required.")
 

@@ -103,7 +103,7 @@ export default function SheetTab({ headers, onSync, syncing, onChanged }: {
   return (
     <div className="flex flex-col gap-4">
       <Panel title="Export Leads Sheet"
-        sub="The export team's workbook. Only the tab named “Leads” is read — every other tab is ignored.">
+        sub="The export team’s workbook. Only the “Leads” and “Activity” tabs are read — every other tab is ignored.">
         {source ? (
           <div className="flex items-center justify-between gap-3 py-2.5">
             <div className="min-w-0">

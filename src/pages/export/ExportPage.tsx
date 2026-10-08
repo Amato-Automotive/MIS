@@ -1,32 +1,37 @@
 // Export — the UK / EU / AU lead pipeline, read from the export team's
 // `Leads` sheet (see backend/routers/export.py).
 //
-// Filters live here, above the tabs, and both tabs are fed from the same
-// filter state: /summary and /leads take identical parameters, so the count on
-// the Pipeline tab is always the number of rows on the Leads tab.
+// Filters live here, above the tabs, and every tab is fed from the same filter
+// state: /summary, /leads and /activity take identical lead filters, so the
+// count on the Pipeline tab is always the number of rows on the Leads tab.
+// Only the Activity tab adds a period — see ExportFilterBar.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/components/ui/Toast";
 import {
   API_URL, ExportFilterBar, NO_FILTERS, filterParams, hasAnyFilter, describeFilters,
-  type Filters, type FilterOptions, type Summary, type Lead, type SyncMeta,
+  PeriodControls, usePeriod, periodParams, fmtDay,
+  type Filters, type FilterOptions, type Summary, type Lead, type SyncMeta, type ActivityResponse,
 } from "./shared";
+import ActivityTab from "./ActivityTab";
 import PipelineTab from "./PipelineTab";
 import LeadsTab from "./LeadsTab";
 import SheetTab from "./SheetTab";
 
-type TabId = "pipeline" | "leads" | "sheet";
+type TabId = "pipeline" | "leads" | "activity" | "sheet";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "pipeline", label: "Pipeline" },
   { id: "leads", label: "Leads" },
+  { id: "activity", label: "Activity" },
   { id: "sheet", label: "Data Source Sheet" },
 ];
 
 const TAB_SUBTITLES: Record<TabId, string> = {
   pipeline: "UK, Europe and Australia leads — where each one stands today",
   leads: "Every lead in the selection, with its contacts, dates and next action",
+  activity: "What happened in a period — contacts logged, stage moves, wins and losses",
   sheet: "Connect and sync the export team's Leads sheet",
 };
 
@@ -47,6 +52,9 @@ export default function ExportPage() {
   const [options, setOptions] = useState<FilterOptions | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [leads, setLeads] = useState<Lead[] | null>(null);
+  const [activityData, setActivityData] = useState<ActivityResponse | null>(null);
+  const period = usePeriod("monthly");
+  const [periodsLoaded, setPeriodsLoaded] = useState(false);
   const [sync, setSync] = useState<SyncMeta | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -63,22 +71,57 @@ export default function ExportPage() {
     })();
   }, [headers, refreshKey]);
 
+  // The Activity tab's months come from their own endpoint, BEFORE its first
+  // data request: deriving them from the response would deadlock (no month
+  // chosen, no request; no request, no months).
+  useEffect(() => {
+    (async () => {
+      const res = await fetch(`${API_URL}/export/periods`, { headers });
+      if (!res.ok) return;
+      const body: { months: { year: number; month: number }[] } = await res.json();
+      period.setMonths(body.months);
+      setPeriodsLoaded(true);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headers, refreshKey]);
+
+  // Land on the newest month that has anything in it, not the calendar month.
+  // With nothing recorded at all there is no month to land on, so the tab
+  // opens on all time and says so, rather than on an empty picker.
+  useEffect(() => {
+    if (!periodsLoaded || period.token || period.mode === "custom" || period.mode === "all") return;
+    if (period.options.length) period.setToken(period.options[0].value);
+    else period.switchMode("all");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [periodsLoaded, period.options]);
+
+  const pp = periodParams(period.mode, period.token, period.range);
+  const ppKey = JSON.stringify(pp);
+
   useEffect(() => {
     if (activeTab === "sheet") return;
     const params = filterParams(filters, staleDays);
+    if (activeTab === "activity") {
+      // Half a custom range, or months still loading: nothing to ask yet.
+      // Clear rather than leave the previous window's numbers under a period
+      // they do not belong to.
+      if (!pp) { setActivityData(null); setLoading(false); return; }
+      Object.entries(pp).forEach(([k, v]) => params.set(k, v));
+    }
     // Abort on supersede: a slow earlier response must not land after a newer
     // one and show the wrong filter's leads.
     const ctrl = new AbortController();
     setLoading(true);
     (async () => {
       try {
-        const path = activeTab === "pipeline" ? "summary" : "leads";
+        const path = { pipeline: "summary", leads: "leads", activity: "activity" }[activeTab];
         const res = await fetch(`${API_URL}/export/${path}?${params}`, { headers, signal: ctrl.signal });
         const body = await res.json();
         if (!res.ok) throw new Error(body.detail ?? `Request failed (${res.status})`);
         setError(null);
         if (activeTab === "pipeline") setSummary(body);
-        else setLeads(body.leads);
+        else if (activeTab === "leads") setLeads(body.leads);
+        else setActivityData(body);
         setSync(body.sync);
         setLoading(false);
       } catch (e) {
@@ -88,7 +131,8 @@ export default function ExportPage() {
       }
     })();
     return () => ctrl.abort();
-  }, [activeTab, filters, staleDays, headers, refreshKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, filters, staleDays, headers, refreshKey, ppKey]);
 
   useEffect(() => {
     if (!tabs.some((t) => t.id === activeTab)) setActiveTab("pipeline");
@@ -102,11 +146,17 @@ export default function ExportPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "Sync failed");
       const n: number = data.warnings?.length ?? 0;
+      // Say what the history recorded: "3 changes" is the answer to "did my
+      // update land", and a first sync must not look like one that saw nothing.
+      const recorded = data.baseline
+        ? "starting point for stage history recorded"
+        : `${data.changes} change${data.changes === 1 ? "" : "s"} recorded`;
+      const loaded = `${data.rows_inserted} leads, ${data.activities} contacts · ${recorded}`;
       if (n) {
-        toast.warning(`Synced ${data.rows_inserted} leads`,
+        toast.warning(`Synced — ${loaded}`,
           `${n} problem${n === 1 ? "" : "s"} in the sheet${canManage ? " — listed on the Data Source Sheet tab" : ""}`);
       } else {
-        toast.success("Sync complete", `${data.rows_inserted} leads loaded`);
+        toast.success("Sync complete", loaded);
       }
     } catch (e) {
       toast.error("Sync failed", e instanceof Error ? e.message : String(e));
@@ -125,6 +175,11 @@ export default function ExportPage() {
     setFilters({ ...filters, stage: String(stage) });
     setActiveTab("leads");
   };
+
+  const windowLabel = period.mode === "all" ? "all time"
+    : period.mode === "custom"
+      ? (period.range.from && period.range.to ? `${fmtDay(period.range.from)} – ${fmtDay(period.range.to)}` : "the chosen dates")
+      : period.options.find((o) => o.value === period.token)?.label ?? "this period";
 
   const active = describeFilters(filters, options);
   const filtered = hasAnyFilter(filters);
@@ -175,7 +230,13 @@ export default function ExportPage() {
       ) : (
         <>
           <ExportFilterBar filters={filters} setFilters={setFilters} options={options}
-            loading={loading} syncing={syncing} onRefresh={refresh} onSync={runSync} sync={sync} />
+            loading={loading} syncing={syncing} onRefresh={refresh} onSync={runSync} sync={sync}
+            period={activeTab === "activity" ? (
+              <PeriodControls
+                mode={period.mode} onMode={period.switchMode}
+                token={period.token} onToken={period.setToken} options={period.options}
+                range={period.range} onRange={period.setRange} />
+            ) : undefined} />
 
           {error ? (
             <Notice>
@@ -213,9 +274,13 @@ export default function ExportPage() {
           ) : activeTab === "pipeline" ? (
             summary && <PipelineTab data={summary} staleDays={staleDays} setStaleDays={setStaleDays}
               regionLabel={regionLabel} onPickStage={pickStage} />
+          ) : activeTab === "leads" ? (
+            leads && <LeadsTab leads={leads} staleDays={staleDays} regionLabel={regionLabel} />
+          ) : period.mode === "custom" && !pp ? (
+            <Notice>Pick a start and an end date to see what happened across a custom period.</Notice>
           ) : (
-            leads && <LeadsTab leads={leads} staleDays={staleDays} regionLabel={regionLabel}
- />
+            activityData && <ActivityTab data={activityData} windowLabel={windowLabel}
+              isAllTime={period.mode === "all"} onAllTime={() => period.switchMode("all")} />
           )}
         </>
       )}

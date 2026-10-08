@@ -12,7 +12,10 @@ import {
 } from "@/components/ui/FilterBar";
 import { formatDate } from "@/lib/format";
 
-export { API_URL, StatCard, KPI, VISIT_COLOR, NEUTRAL_BAR, TGT_TRACK } from "../oe-network/shared";
+export {
+  API_URL, StatCard, KPI, VISIT_COLOR, CALL_COLOR, NEUTRAL_BAR, TGT_TRACK,
+  PeriodControls, usePeriod, periodParams,
+} from "../oe-network/shared";
 
 // ── API shapes ────────────────────────────────────────────────────────────────
 
@@ -24,10 +27,22 @@ export interface FunnelRow {
   stage: number; name: string; open_here: number; reached: number; pipeline: Pot;
   median_days_in_stage: number | null; days_known: number;
 }
+/** How a time-in-stage was measured — see services/export_leads_sync.stage_entry.
+ *  `floor` is a lower bound (tracking began after the lead reached the stage)
+ *  and is always printed with "≥". */
+export type StageBasis = "observed" | "sheet" | "floor" | null;
+export const BASIS_NOTE: Record<Exclude<StageBasis, null>, string> = {
+  observed: "Seen by the sync moving into this stage",
+  sheet: "From the sheet's Stage Since date",
+  floor: "At this stage since tracking began at least — the real figure is longer",
+};
+export const fmtDays = (d: number | null, basis: StageBasis) =>
+  d == null ? "—" : `${basis === "floor" ? "≥" : ""}${d}d`;
+
 export interface AttentionItem {
   company: string; owner: string | null; region: string | null;
   stage_no: number | null; stage_name: string | null;
-  days_in_stage: number | null; days_since_contact: number | null;
+  days_in_stage: number | null; days_in_stage_basis: StageBasis; days_since_contact: number | null;
   next_action: string | null; next_action_date: string | null;
 }
 export interface SyncMeta { registered: boolean; last_synced_at: string | null; last_sync_status: string | null }
@@ -41,12 +56,49 @@ export interface Summary {
   no_stage_open: number;
   by_region: Group[]; by_owner: Group[]; by_customer_type: Group[]; by_source: Group[];
   attention: { overdue_actions: AttentionItem[]; stale: AttentionItem[]; longest_in_stage: AttentionItem[] };
+  lost_reasons: { key: string | null; leads: number }[];
   data_quality: {
-    leads: number; open: number; missing_owner: number; missing_stage: number;
+    leads: number; open: number; closed: number; lost: number;
+    missing_owner: number; missing_stage: number;
     missing_stage_since: number; missing_last_contact: number; missing_potential: number;
-    missing_region: number;
+    missing_region: number; missing_closed_date: number; missing_lost_reason: number;
   };
+  tracking_since: string | null;
   region_labels: Record<string, string>;
+  sync: SyncMeta;
+}
+
+export interface RecentActivity {
+  date: string; activity_type: string | null; by_person: string | null; notes: string | null;
+}
+
+// ── Activity tab (/export/activity) ──
+export interface FeedItem {
+  date: string;
+  type: "activity" | "added" | "removed" | "stage" | "status";
+  company: string;
+  activity_type?: string | null; by_person?: string | null; notes?: string | null; matched?: boolean;
+  from_stage?: number | null; to_stage?: number | null;
+  from_status?: string | null; to_status?: string | null;
+}
+export interface CloseItem {
+  company: string; status: "Won" | "Lost"; closed_on: string; owner: string | null;
+  region: string | null; potential_cr: number | null; lost_reason: string | null; stage_no: number | null;
+}
+export interface ActivityResponse {
+  movement: { added: number; removed: number; advanced: number; went_back: number; staged: number;
+              on_hold: number; won: number; lost: number };
+  closes: CloseItem[];
+  stage_flow: { stage: number; name: string; entered: number; moved_on: number; went_back: number }[];
+  activity: {
+    touches: number; companies: number; open_leads: number; open_touched: number; unmatched: number;
+    by_type: { key: string | null; count: number }[];
+    by_person: { key: string | null; count: number }[];
+  };
+  feed: FeedItem[]; feed_total: number;
+  window: { from: string | null; to: string | null };
+  lead_filtered: boolean;
+  tracking_since: string | null;
   sync: SyncMeta;
 }
 export interface Lead {
@@ -54,11 +106,14 @@ export interface Lead {
   country: string | null; region: string | null; city: string | null;
   contact_person: string | null; contact_email: string | null; contact_phone: string | null;
   stage_no: number | null; stage_name: string | null; stage_since: string | null;
-  status: string | null; potential_cr: number | null; last_contact: string | null;
+  status: string | null; closed_date: string | null; lost_reason: string | null;
+  potential_cr: number | null; last_contact: string | null;
   next_action: string | null; next_action_date: string | null; source: string | null;
   remarks: string | null;
-  is_open: boolean; days_in_stage: number | null; days_since_contact: number | null;
+  is_open: boolean; days_in_stage: number | null; days_in_stage_basis: StageBasis;
+  days_since_contact: number | null;
   stale: boolean | null; next_action_overdue: boolean | null;
+  recent_activity: RecentActivity[];
 }
 export interface FilterOptions {
   owners: string[]; customer_types: string[]; countries: string[]; sources: string[];
@@ -140,19 +195,23 @@ const inputClass =
   "h-9 px-3 rounded-xl border border-gray-200 text-xs text-gray-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all";
 
 /**
- * The Export filter bar. Order is the app-wide one: person, geography, then
- * type, then search. No PeriodControls — the pipeline is a snapshot of today,
- * see the page header note.
+ * The Export filter bar. Order is the app-wide one: period, person, geography,
+ * then type, then search.
+ *
+ * `period` is passed only by the Activity tab. Pipeline and Leads are the list
+ * as it stands today — the sheet is overwritten as leads move, so a period
+ * control there would only filter by some date column and imply a history
+ * those views do not have.
  *
  * Source is deliberately not a filter: it would be the eighth, past the point
  * where a bar stops being scannable, and the pipeline tab already splits by it.
  */
 export function ExportFilterBar({
-  filters, setFilters, options, loading, syncing, onRefresh, onSync, sync,
+  filters, setFilters, options, loading, syncing, onRefresh, onSync, sync, period,
 }: {
   filters: Filters; setFilters: (f: Filters) => void; options: FilterOptions | null;
   loading: boolean; syncing: boolean; onRefresh: () => void; onSync: () => void;
-  sync: SyncMeta | null;
+  sync: SyncMeta | null; period?: React.ReactNode;
 }) {
   // The search box is typed into; the filter it feeds is debounced so each
   // keystroke is not a request.
@@ -169,6 +228,7 @@ export function ExportFilterBar({
 
   return (
     <FilterBar>
+      {period}
       <Select value={filters.owner} onChange={set("owner")}
         options={filterOpts(options?.owners, "salesperson")}
         placeholder={FILTER_LABELS.salesperson.placeholder} />

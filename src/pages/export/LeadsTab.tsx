@@ -4,7 +4,7 @@
 import { Fragment, useMemo, useState } from "react";
 import { ChevronRight, ArrowUpDown } from "lucide-react";
 import {
-  Panel, fmtCr, fmtDay, NOT_SET, STATUS_STYLE, type Lead,
+  Panel, fmtCr, fmtDay, fmtDays, BASIS_NOTE, NOT_SET, STATUS_STYLE, type Lead,
 } from "./shared";
 
 type SortKey = "sheet" | "company" | "owner" | "stage" | "potential" | "in_stage" | "contact" | "next";
@@ -119,11 +119,13 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
                         {l.potential_cr != null ? fmtCr(l.potential_cr) : <span className="text-gray-400">—</span>}
                       </td>
                       <td className="py-2 pr-3 text-right text-gray-600 whitespace-nowrap"
-                        title={l.stage_since ? `Since ${fmtDay(l.stage_since)}` : "No Stage Since date"}>
-                        {l.days_in_stage != null ? `${l.days_in_stage}d` : <span className="text-gray-400">—</span>}
+                        title={l.days_in_stage_basis ? BASIS_NOTE[l.days_in_stage_basis] : "Not known yet"}>
+                        {l.days_in_stage != null
+                          ? fmtDays(l.days_in_stage, l.days_in_stage_basis)
+                          : <span className="text-gray-400">—</span>}
                       </td>
                       <td className="py-2 pr-3 text-right whitespace-nowrap"
-                        title={l.last_contact ? fmtDay(l.last_contact) : "No Last Contact date"}>
+                        title={l.last_contact ? `${fmtDay(l.last_contact)} — newest Activity entry` : "Nothing on the Activity tab"}>
                         {l.days_since_contact != null
                           ? <span className={l.stale ? "font-semibold text-amber-600" : "text-gray-600"}>
                               {l.days_since_contact}d ago
@@ -147,7 +149,7 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
                       <tr className="bg-gray-50/60 border-b border-gray-100">
                         <td />
                         <td colSpan={9} className="py-3 pr-3">
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-[11px]">
+                          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-[11px]">
                             <div>
                               <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Contact</p>
                               <p className="text-gray-700">{l.contact_person ?? "—"}</p>
@@ -158,7 +160,23 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
                               <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Dates</p>
                               <p className="text-gray-600">Stage since: <b className="text-gray-700">{fmtDay(l.stage_since)}</b></p>
                               <p className="text-gray-600">Last contact: <b className="text-gray-700">{fmtDay(l.last_contact)}</b></p>
+                              {!l.is_open && (
+                                <p className="text-gray-600">{l.status}: <b className="text-gray-700">{fmtDay(l.closed_date)}</b></p>
+                              )}
+                              {l.status === "Lost" && (
+                                <p className="text-gray-600">Reason: <b className="text-gray-700">{l.lost_reason ?? "—"}</b></p>
+                              )}
                               <p className="text-gray-600">Source: <b className="text-gray-700">{l.source ?? "—"}</b></p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Recent activity</p>
+                              {l.recent_activity.length ? l.recent_activity.map((a, i) => (
+                                <p key={i} className="text-gray-600">
+                                  <b className="text-gray-700">{fmtDay(a.date)}</b> · {a.activity_type ?? "—"}
+                                  {a.by_person && <> · {a.by_person}</>}
+                                  {a.notes && <span className="block text-[10px] text-gray-500">{a.notes}</span>}
+                                </p>
+                              )) : <p className="text-gray-500">Nothing on the Activity tab</p>}
                             </div>
                             <div>
                               <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Remarks</p>
@@ -177,9 +195,11 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
         </div>
       )}
       <p className="text-[10px] text-gray-500 mt-3">
-        <b className="text-gray-600">In stage</b> counts days from the lead&rsquo;s Stage Since date;{" "}
-        <b className="text-gray-600">Last contact</b> turns amber after {staleDays} days (the threshold
-        is set on the Pipeline tab). A dash means the sheet leaves that cell blank — it is not a zero.
+        <b className="text-gray-600">In stage</b> counts days from when a sync saw the lead move into
+        its stage, or else the sheet&rsquo;s Stage Since date; &ldquo;≥&rdquo; means it was already
+        there when tracking began, so the real figure is longer.{" "}
+        <b className="text-gray-600">Last contact</b> is the newest entry on the Activity tab and turns
+        amber after {staleDays} days (the threshold is set on the Pipeline tab). A dash means the sheet leaves that cell blank — it is not a zero.
         Overdue next actions are only flagged for open leads.
       </p>
     </Panel>

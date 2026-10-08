@@ -11,7 +11,7 @@ import { Briefcase, IndianRupee, Trophy, Clock, AlarmClock } from "lucide-react"
 import Select from "@/components/ui/Select";
 import Explain from "../oe-network/dealers/Explain";
 import {
-  StatCard, KPI, VISIT_COLOR, TGT_TRACK, Panel, fmtCr, potCoverage, fmtDay, plural, NOT_SET,
+  StatCard, KPI, VISIT_COLOR, TGT_TRACK, Panel, fmtCr, potCoverage, fmtDay, fmtDays, plural, NOT_SET,
   type Summary, type Group, type AttentionItem,
 } from "./shared";
 
@@ -41,7 +41,7 @@ export default function PipelineTab({ data, staleDays, setStaleDays, regionLabel
             : k.lost ? `${k.lost} lost` : undefined}
           icon={<Trophy size={18} />} {...KPI.conversion} />
         <StatCard label={`No Contact ${staleDays}+ Days`} value={k.stale}
-          sub={`${dq.missing_last_contact} open lead${dq.missing_last_contact === 1 ? " has" : "s have"} no date`}
+          sub={`${dq.missing_last_contact} open lead${dq.missing_last_contact === 1 ? " has" : "s have"} no logged activity`}
           icon={<Clock size={18} />} {...KPI.warning} />
         <StatCard label="Overdue Next Actions" value={k.overdue_actions}
           sub="next action date has passed"
@@ -84,7 +84,9 @@ export default function PipelineTab({ data, staleDays, setStaleDays, regionLabel
                 {f.pipeline.potential_cr != null ? fmtCr(f.pipeline.potential_cr) : "—"}
               </span>
               <span className="hidden md:block w-24 shrink-0 text-right text-[11px] text-gray-500"
-                title={f.days_known ? `Median of the ${f.days_known} lead(s) with a Stage Since date` : "No Stage Since dates at this stage"}>
+                title={f.days_known
+                  ? `Median of the ${f.days_known} lead(s) whose arrival at this stage is known`
+                  : "No lead's arrival at this stage is known yet"}>
                 {f.median_days_in_stage != null ? `${Math.round(f.median_days_in_stage)}d here` : "—"}
               </span>
             </button>
@@ -100,9 +102,14 @@ export default function PipelineTab({ data, staleDays, setStaleDays, regionLabel
           <b className="text-gray-700">reached</b> counts every lead whose current stage is this one
           or later, including lost ones (they reached the stage where they were lost). The gap
           between two neighbouring grey bars is how many leads have stopped there.{" "}
-          <b className="text-gray-700">Median time</b> is how long open leads have sat at the stage,
-          from their Stage Since date — it shows &ldquo;—&rdquo; until the team fills that date in
-          ({dq.missing_stage_since} of {dq.open} open leads are still blank).
+          <b className="text-gray-700">Median time</b> is how long open leads have sat at the stage.
+          It is measured from the day a sync saw the lead move into it or, before that, from the
+          sheet&rsquo;s Stage Since date.{" "}
+          {data.tracking_since
+            ? <>Stage moves have been recorded since <b className="text-gray-700">{fmtDay(data.tracking_since)}</b>; a
+                lead already at its stage then, with no Stage Since date, has only a minimum
+                (&ldquo;≥&rdquo; below) and is left out of the median.</>
+            : <>No sync has recorded stage moves yet.</>}
           {data.no_stage_open > 0 && <> {plural(data.no_stage_open, "open lead has", "open leads have")} no stage and {data.no_stage_open === 1 ? "is" : "are"} not in the funnel.</>}
           {" "}Click a stage to see its leads.
         </Explain>
@@ -127,25 +134,31 @@ export default function PipelineTab({ data, staleDays, setStaleDays, regionLabel
             metric={(a) => `${a.days_since_contact}d`}
             detail={(a) => a.stage_name && `Stage ${a.stage_no} · ${a.stage_name}`}
             emptyText={dq.missing_last_contact === dq.open && dq.open > 0
-              ? `No open lead has a Last Contact date yet, so there is nothing to measure.`
-              : `Every open lead with a Last Contact date was contacted in the last ${staleDays} days.`}
+              ? `No open lead has any activity logged yet, so there is nothing to measure.`
+              : `Every open lead with logged activity was contacted in the last ${staleDays} days.`}
             tone="text-amber-600" />
           {dq.missing_last_contact > 0 && dq.missing_last_contact < dq.open && (
             <p className="text-[10px] text-gray-500 mt-2">
-              {plural(dq.missing_last_contact, "open lead has", "open leads have")} no Last Contact
-              date and cannot be judged either way — they are not counted here.
+              {plural(dq.missing_last_contact, "open lead has", "open leads have")} nothing on the
+              Activity tab and cannot be judged either way — they are not counted here. Last contact
+              is the newest Activity entry for the company.
             </p>
           )}
         </Panel>
         <Panel title="Longest in Stage" sub="Open leads that have sat longest at their current stage">
           <AttentionList items={data.attention.longest_in_stage}
             total={data.attention.longest_in_stage.length}
-            metric={(a) => `${a.days_in_stage}d`}
+            metric={(a) => fmtDays(a.days_in_stage, a.days_in_stage_basis)}
             detail={(a) => a.stage_name && `Stage ${a.stage_no} · ${a.stage_name}`}
             emptyText={dq.open
-              ? "No open lead has a Stage Since date yet. Once the team fills it in, the leads stuck longest appear here."
+              ? "No open lead's time in stage is known yet. It fills in from the next sync onward, or from Stage Since dates in the sheet."
               : "No open leads in this selection."}
             tone="text-gray-700" />
+          {data.attention.longest_in_stage.some((a) => a.days_in_stage_basis === "floor") && (
+            <p className="text-[10px] text-gray-500 mt-2">
+              &ldquo;≥&rdquo; is a minimum: the lead was already at that stage when tracking began.
+            </p>
+          )}
         </Panel>
       </div>
 
@@ -164,6 +177,8 @@ export default function PipelineTab({ data, staleDays, setStaleDays, regionLabel
           <GroupBars rows={data.by_source} label={(k) => k ?? NOT_SET} />
         </Panel>
       </div>
+
+      <LostReasons data={data} />
 
       <DataGaps dq={data.data_quality} />
     </div>
@@ -239,8 +254,11 @@ function DataGaps({ dq }: { dq: Summary["data_quality"] }) {
     { label: "Stage", filled: dq.leads - dq.missing_stage, of: dq.leads, of_label: "leads" },
     { label: "Market (from Country)", filled: dq.leads - dq.missing_region, of: dq.leads, of_label: "leads" },
     { label: "Stage Since", filled: dq.open - dq.missing_stage_since, of: dq.open, of_label: "open leads" },
-    { label: "Last Contact", filled: dq.open - dq.missing_last_contact, of: dq.open, of_label: "open leads" },
+    { label: "Any logged activity", filled: dq.open - dq.missing_last_contact, of: dq.open, of_label: "open leads" },
     { label: "Est. Potential", filled: dq.open - dq.missing_potential, of: dq.open, of_label: "open leads" },
+    // Only meaningful once something has closed; hidden rather than "0 of 0".
+    ...(dq.closed ? [{ label: "Closed Date", filled: dq.closed - dq.missing_closed_date, of: dq.closed, of_label: "won / lost" }] : []),
+    ...(dq.lost ? [{ label: "Lost Reason", filled: dq.lost - dq.missing_lost_reason, of: dq.lost, of_label: "lost leads" }] : []),
   ];
   return (
     <Panel title="Data Gaps"
@@ -260,10 +278,39 @@ function DataGaps({ dq }: { dq: Summary["data_quality"] }) {
         ))}
       </div>
       <Explain>
-        These are cells the export team has left blank in the Leads sheet. Stage Since and Last
-        Contact matter most: without them the Median time, Gone Quiet and Longest in Stage panels
-        have nothing to measure. Fix them in the sheet, then press Sync.
+        These are gaps in the export team&rsquo;s sheet. <b className="text-gray-700">Any logged
+        activity</b> counts open leads with at least one row on the Activity tab — that is where
+        Last Contact comes from, so a lead with none cannot show up as gone quiet.{" "}
+        <b className="text-gray-700">Closed Date</b> is how a win or loss lands in the right month on
+        the Activity tab. Fix them in the sheet, then press Sync.
       </Explain>
+    </Panel>
+  );
+}
+
+/** Why we lose. Only drawn once something has been lost — an empty chart of
+ *  reasons says nothing the Won/Lost count doesn't. */
+function LostReasons({ data }: { data: Summary }) {
+  const rows = data.lost_reasons;
+  if (!data.kpis.lost) return null;
+  const max = Math.max(1, ...rows.map((r) => r.leads));
+  return (
+    <Panel title="Why Leads Are Lost"
+      sub={`All ${plural(data.kpis.lost, "lost lead")} in this selection, by the reason the team gave`}>
+      <div className="flex flex-col gap-1.5 mt-2">
+        {rows.map((r) => (
+          <div key={r.key ?? "__none"} className="flex items-center gap-3">
+            <span className={`w-44 shrink-0 text-xs truncate ${r.key == null ? "italic text-gray-500" : "text-gray-600"}`}>
+              {r.key ?? "No reason given"}
+            </span>
+            <span className="relative flex-1 h-3.5 rounded-md overflow-hidden" style={{ background: "#f9fafb" }}>
+              <span className="absolute inset-y-0 left-0 rounded-md bg-gray-400"
+                style={{ width: `${(r.leads / max) * 100}%` }} />
+            </span>
+            <span className="w-10 shrink-0 text-right text-xs font-semibold text-gray-700">{r.leads}</span>
+          </div>
+        ))}
+      </div>
     </Panel>
   );
 }

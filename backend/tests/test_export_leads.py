@@ -23,13 +23,14 @@ from datetime import date
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from services.export_leads_sync import (  # noqa: E402
-    build_summary, enrich, parse_leads_grids, parse_stage, parse_status, region_for,
+    build_summary, enrich, parse_leads_grids, parse_stage, parse_status, parse_workbook_grids,
+    region_for,
 )
 
 HEADERS = ["Company", "Owner", "Customer Type", "Country", "City", "Contact Person",
            "Contact Email", "Contact Phone", "Stage", "Stage Since", "Status",
-           "Est. Potential (₹ Cr)", "Last Contact", "Next Action", "Next Action Date",
-           "Source", "Remarks"]
+           "Closed Date", "Lost Reason", "Est. Potential (₹ Cr)", "Next Action",
+           "Next Action Date", "Source", "Remarks"]
 H = {h: i for i, h in enumerate(HEADERS)}
 
 
@@ -53,12 +54,14 @@ def parse(*rows, headers=HEADERS, tab="Leads", extra=None):
 def test_reads_a_full_row_and_derives_region():
     recs, errs = parse(row("Halfords", Owner="Reenu + Jai", Country="UK",
                            Stage="6 - Sample Submission", Status="Active",
-                           Est_Potential=5, Last_Contact=46252))   # 2026-08-18 as a serial
+                           Est_Potential=5, Stage_Since=46252))   # 2026-08-18 as a serial
     assert errs == []
     r = recs[0]
     assert (r["company"], r["owner"], r["stage_no"], r["status"]) == ("Halfords", "Reenu + Jai", 6, "Active")
     assert r["potential_cr"] == 5.0
-    assert r["last_contact"] == date(2026, 8, 18)
+    assert r["stage_since"] == date(2026, 8, 18)
+    # Never read from the Leads tab — filled from the Activity tab.
+    assert r["last_contact"] is None
     assert r["region"] == "UK"
     assert r["sheet_row"] == 2
 
@@ -83,9 +86,9 @@ def test_a_missing_optional_column_is_reported_not_silently_blank():
 
 def test_bad_values_are_left_blank_and_named():
     recs, errs = parse(row("Piton", Stage="Stage twelve", Status="Maybe",
-                           Est_Potential="big", Last_Contact="soon"))
+                           Est_Potential="big", Stage_Since="soon"))
     r = recs[0]
-    assert (r["stage_no"], r["status"], r["potential_cr"], r["last_contact"]) == (None, None, None, None)
+    assert (r["stage_no"], r["status"], r["potential_cr"], r["stage_since"]) == (None, None, None, None)
     assert len(errs) == 4 and all("Piton" in e for e in errs)
 
 
@@ -224,3 +227,95 @@ def test_groups_keep_not_set_last_and_regions_in_market_order():
     s = build_summary(rows, TODAY, 30)
     assert [g["key"] for g in s["by_region"]] == ["UK", "AU", None]
     assert [g["key"] for g in s["by_owner"]] == ["Jai", "Reenu", None]
+
+
+# ── How a lead closed ─────────────────────────────────────────────────────────
+
+def test_closed_date_and_lost_reason_are_read_and_cross_checked():
+    recs, errs = parse(row("A", Stage="5", Status="Lost", Closed_Date="12-09-2026", Lost_Reason="price"),
+                       row("B", Stage="2", Status="Active", Closed_Date="12-09-2026",
+                           Lost_Reason="Price"))
+    assert (recs[0]["closed_date"], recs[0]["lost_reason"]) == (date(2026, 9, 12), "Price")
+    # An open lead with closing details is a contradiction the team must fix,
+    # not something to silently resolve either way.
+    assert sum("(B)" in e for e in errs) == 2 and not any("(A)" in e for e in errs)
+
+
+def test_future_closed_date_and_unknown_reason_are_rejected():
+    recs, errs = parse(row("A", Stage="5", Status="Lost", Closed_Date="01-01-2099",
+                           Lost_Reason="Bad vibes"))
+    assert (recs[0]["closed_date"], recs[0]["lost_reason"]) == (None, None)
+    assert len(errs) == 2
+
+
+# ── Activity tab ──────────────────────────────────────────────────────────────
+
+ACT_HEADERS = ["Date", "Company", "Type", "By", "Notes"]
+
+
+def workbook(leads, activity=None):
+    grids = {"Leads": [HEADERS, *leads]}
+    if activity is not None:
+        grids["Activity"] = [ACT_HEADERS, *activity]
+    return parse_workbook_grids(grids, date(2026, 9, 30))
+
+
+def test_last_contact_is_the_newest_matched_activity():
+    leads, acts, errs = workbook(
+        [row("Halfords", Stage="6", Status="Active"), row("EFS", Stage="3", Status="Active")],
+        [["06-07-2026", "EFS", "Email", "Jai", "follow up"],
+         ["14-08-2026", "efs ", "Email", "Jai", "follow up again"],   # case/space drift still matches
+         ["18-08-2026", "Halfords", "Sample Sent", "", ""]])
+    assert errs == []
+    by = {l["company"]: l["last_contact"] for l in leads}
+    assert by == {"Halfords": date(2026, 8, 18), "EFS": date(2026, 8, 14)}
+    assert len(acts) == 3 and all(a["matched"] for a in acts)
+
+
+def test_activity_for_an_unknown_company_is_kept_but_never_a_last_contact():
+    leads, acts, errs = workbook([row("EFS", Stage="3", Status="Active")],
+                                 [["01-09-2026", "Efs Ltd", "Call", "", ""]])
+    assert leads[0]["last_contact"] is None
+    assert acts[0]["matched"] is False
+    assert any("Efs Ltd" in e and "not on the Leads tab" in e for e in errs)
+
+
+def test_bad_activity_rows_are_skipped_or_blanked_and_named():
+    _, acts, errs = workbook([row("EFS", Stage="3", Status="Active")],
+                             [["", "EFS", "Email", "", "no date"],
+                              ["31-12-2026", "EFS", "Email", "", "future"],
+                              ["01-09-2026", "EFS", "Carrier pigeon", "", "odd type"],
+                              ["01-09-2026", "", "Email", "", "no company"]])
+    assert [a["notes"] for a in acts] == ["odd type"]
+    assert acts[0]["activity_type"] is None
+    assert len(errs) == 4
+
+
+def test_workbook_without_an_activity_tab_still_syncs_with_a_warning():
+    leads, acts, errs = workbook([row("EFS", Stage="3", Status="Active")])
+    assert len(leads) == 1 and acts == []
+    assert any("No 'Activity' tab" in e for e in errs)
+
+
+# ── Time in stage ─────────────────────────────────────────────────────────────
+
+def test_time_in_stage_prefers_what_the_sync_saw_then_the_sheet_then_a_floor():
+    base = {"company": "x", "status": "Active", "stage_no": 3, "potential_cr": None,
+            "last_contact": None, "next_action_date": None, "stage_since": date(2026, 9, 1)}
+    observed = enrich({**base, "stage_entered_kind": "stage", "stage_entered_on": date(2026, 9, 20)}, TODAY, 30)
+    sheet = enrich({**base, "stage_entered_kind": "baseline", "stage_entered_on": date(2026, 9, 25)}, TODAY, 30)
+    floor = enrich({**base, "stage_since": None,
+                    "stage_entered_kind": "baseline", "stage_entered_on": date(2026, 9, 25)}, TODAY, 30)
+    assert (observed["days_in_stage"], observed["days_in_stage_basis"]) == (8, "observed")
+    assert (sheet["days_in_stage"], sheet["days_in_stage_basis"]) == (27, "sheet")
+    assert (floor["days_in_stage"], floor["days_in_stage_basis"]) == (3, "floor")
+
+
+def test_a_floor_is_never_averaged_into_the_median():
+    rows = [lead("a", stage=3, stage_since=date(2026, 9, 18)),
+            enrich({"company": "b", "status": "Active", "stage_no": 3, "potential_cr": None,
+                    "last_contact": None, "next_action_date": None, "stage_since": None,
+                    "stage_entered_kind": "baseline", "stage_entered_on": date(2026, 9, 27),
+                    "owner": None, "region": None, "customer_type": None, "source": None}, TODAY, 30)]
+    f3 = build_summary(rows, TODAY, 30)["funnel"][2]
+    assert (f3["median_days_in_stage"], f3["days_known"], f3["open_here"]) == (10, 1, 2)

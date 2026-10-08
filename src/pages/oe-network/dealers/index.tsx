@@ -142,20 +142,22 @@ export default function DealersTab({ headers }: { headers: Record<string, string
   // The panel below is narrower: only the products that publish a total.
   const FS = oursLabels(oems, fs?.products);
   const tgtPct = hitPct(k?.sold, k?.target);
-  // `sold` is rolled up to the whole quarters the period touches, because it
-  // sits beside a target agreed for a quarter and never pro-rated. So it does
-  // NOT move between months inside one quarter — July and August of JAS'26
-  // give the same figure. The Target tile has always declared that and this
-  // one did not, which made the pair read as one tile having stopped following
-  // the filter. Only said when the window really is wider than what was asked
-  // for; where no quarter overlaps, `sold` is the selected months after all.
+  // Targets are agreed per quarter and never pro-rated, so Achieved % is
+  // quarter to date: `sold` runs from the quarter's first month to the end of
+  // the selected period (September of JAS'26 → Jul–Sep, August → Jul–Aug).
+  // The sale tile itself shows just the months picked. All three tiles used to
+  // show the whole quarter, so every month of JAS'26 looked identical and the
+  // tiles read as ignoring the filter.
   const ym = (s: string | null | undefined) => s?.slice(0, 7);
+  const mon = (iso: string) => MONTH_SHORT[Number(iso.slice(5, 7)) - 1];
   const ss = data?.sold_scope ?? null;
-  const soldSub = ss && (ym(ss.month_from) !== ym(data?.period.month_from)
-                         || ym(ss.month_to) !== ym(data?.period.month_to))
-    ? `${MONTH_SHORT[Number(ss.month_from.slice(5, 7)) - 1]}–${
-        MONTH_SHORT[Number(ss.month_to.slice(5, 7)) - 1]}, whole quarter`
-    : undefined;
+  // Only when the quarter-to-date window is wider than the period picked;
+  // otherwise `sold` already is the selected months.
+  const qtd = !!ss && (ym(ss.month_from) !== ym(data?.period.month_from)
+                       || ym(ss.month_to) !== ym(data?.period.month_to));
+  const pf = data?.period.month_from, pt = data?.period.month_to;
+  const periodMonths = pf && pt ? (ym(pf) === ym(pt) ? mon(pf) : `${mon(pf)}–${mon(pt)}`) : "";
+  const quarterNames = (data?.by_quarter ?? []).map((q) => q.label).join(" + ");
   // The benchmark, NOT this view's own penetration. Filtering to a rep must not
   // change the yardstick their dealers are measured against, or a weak
   // territory reads as having the least to gain.
@@ -287,12 +289,15 @@ export default function DealersTab({ headers }: { headers: Record<string, string
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {/* Purple is `target` and never lands on a person — see KPI. */}
           <StatCard label="Target" value={n0(k.target)}
-            sub="whole quarter, never pro-rated"
+            sub={quarterNames ? `${quarterNames} quarter target, not pro-rated` : "quarter target, not pro-rated"}
             icon={<Target size={18} />} {...KPI.target} />
-          <StatCard label={L.sale} value={n0(k.sold)} sub={soldSub}
+          <StatCard label={L.sale} value={n0(qtd ? k.ys_sale : k.sold)}
+            sub={qtd ? `${periodMonths} only` : undefined}
             icon={<Package size={18} />} {...KPI.ours} />
           <StatCard label="Achieved %" value={pct(tgtPct)}
-            sub={`${n0(k.sold)} ÷ ${n0(k.target)}`}
+            sub={qtd && ss
+              ? `${n0(k.sold)} sold ${mon(ss.month_from)}–${mon(ss.month_to)} (quarter to date) ÷ ${n0(k.target)}`
+              : `${n0(k.sold)} ÷ ${n0(k.target)}`}
             icon={<Percent size={18} />} {...KPI.conversion} />
           <StatCard label="Coverage" value={pct(k.coverage)}
             sub={`${n0(k.contacted)} of ${n0(k.dealers)} dealerships`}

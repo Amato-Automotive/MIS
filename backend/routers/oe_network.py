@@ -2475,10 +2475,16 @@ sold AS (
     --
     -- The month window is "inside ANY quarter that overlaps the period", so it
     -- matches the quarters shown, whether or not this particular dealer was
-    -- given one.
+    -- given one -- and it stops at the END of the period: quarter to date. A
+    -- month view inside JAS'26 used to sum all of Jul-Sep, so July, August and
+    -- September showed one identical figure and the tiles read as ignoring the
+    -- filter. Quarter-to-date moves with the month and still never slices the
+    -- target. A whole-quarter (or wider) period ends on the quarter's last
+    -- month, so it is unchanged there.
     SELECT m.dealer_id, SUM(m.ys_sale) AS sold
     FROM oe_dealer_monthly m
     WHERE {prod_window}
+      AND (CAST(:m_to AS date) IS NULL OR m.month <= CAST(:m_to AS date))
       AND EXISTS (
         SELECT 1 FROM oe_dealer_targets t
          WHERE (CAST(:m_from AS date) IS NULL OR t.period_end   >= CAST(:m_from AS date))
@@ -2663,13 +2669,18 @@ def _dealer_quarters(db: Session, extra: str, params: dict) -> list:
                 "by_product": [],
                 **_funnel(sales["oem_total"], sales["ysasc"], sales["ys_sale"]),
             }
+        # Quarter to date, matching the tiles above this panel: stops at the
+        # period's last month when that falls inside the quarter.
+        sold_through = (min(r["period_end"], params["m_to"]) if params.get("m_to")
+                        else r["period_end"])
         sold = db.execute(text(f"""
             SELECT SUM(m.ys_sale) AS ys_sale
             FROM oe_dealer_monthly m JOIN oe_dealerships d ON d.id = m.dealer_id
             WHERE m.month >= :q_start AND m.month <= :q_end
               AND m.product = :q_prod {extra}
-        """), {**params, "q_start": r["period_start"], "q_end": r["period_end"],
+        """), {**params, "q_start": r["period_start"], "q_end": sold_through,
                "q_prod": r["product"]}).scalar()
+        q["sold_through"] = sold_through.isoformat()
         q["by_product"].append({
             "product": r["product"], "target": r["target"],
             "achievement": r["achievement"], "sold": sold,
@@ -2843,17 +2854,26 @@ def dealer_detail(
         "period_end": t["period_end"].isoformat(),
         "product": t["product"],
         "target": t["target"], "achievement": t["achievement"], "sold": t["sold"],
+        # Quarter to date for the period the tab is filtered to, so the drawer's
+        # Achieved % matches the tab's; `sold` stays whole-quarter for the
+        # drawer's All time view.
+        "sold_to_period": t["sold_to_period"],
     } for t in db.execute(text(f"""
         SELECT t.quarter, t.fy_year, t.period_start, t.period_end, t.product,
                CAST(t.target      AS double precision) AS target,
                CAST(t.achievement AS double precision) AS achievement,
                (SELECT SUM(m.ys_sale) FROM oe_dealer_monthly m
                  WHERE m.dealer_id = t.dealer_id AND m.product = t.product
-                   AND m.month >= t.period_start AND m.month <= t.period_end) AS sold
+                   AND m.month >= t.period_start AND m.month <= t.period_end) AS sold,
+               (SELECT SUM(m.ys_sale) FROM oe_dealer_monthly m
+                 WHERE m.dealer_id = t.dealer_id AND m.product = t.product
+                   AND m.month >= t.period_start AND m.month <= t.period_end
+                   AND (CAST(:m_to AS date) IS NULL OR m.month <= CAST(:m_to AS date))
+               ) AS sold_to_period
         FROM oe_dealer_targets t
         WHERE t.dealer_id = :id AND {_prod('t')}
         ORDER BY t.period_start, t.product
-    """), prod).mappings().all()]
+    """), {**prod, "m_to": m_to}).mappings().all()]
 
     # Contact history, newest first, with each remark category kept separate —
     # same rule as the Field Activity tab: the legacy blob and the four
@@ -3164,8 +3184,11 @@ def dealer_performance(
           AND (CAST(:m_to   AS date) IS NULL OR t.period_start <= CAST(:m_to   AS date))
           AND {_prod('t')} {extra}
     """), params).mappings().first()
+    # Ends at the period's own last month: `sold` is quarter to date (see the
+    # `sold` CTE), so September of JAS'26 reads Jul-Sep and August Jul-Aug.
     sold_scope = ({"month_from": sq["m_from"].isoformat(),
-                   "month_to": sq["m_to"].isoformat()}
+                   "month_to": min(sq["m_to"], m_to).isoformat() if m_to
+                               else sq["m_to"].isoformat()}
                   if sq and sq["m_from"] else None)
 
     by_sp: dict = {}

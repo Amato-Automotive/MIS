@@ -1,4 +1,4 @@
-import { VISIT_COLOR, NEUTRAL_BAR, OVER_COLOR, ON_TRACK_PCT, firstName, coverageColor } from "../shared";
+import { VISIT_COLOR, NEUTRAL_BAR, OVER_COLOR, ON_TRACK_PCT, firstName, coverageColor, MONTH_SHORT } from "../shared";
 import {
   type DealerSpRow, type DealerQuarter, type DealerPerf, n0, pct, categoryLabel,
   oursLabels,
@@ -84,8 +84,8 @@ export function QuarterPanel({ rows, funnel, oems = [] }: {
         {derived && (
           <> This OEM's file publishes no quarter achievement column, so{" "}
             <b className="text-gray-600">Achieved</b> is summed from the months inside
-            the quarter — our own sales, counted the same way, but derived here rather
-            than stated by the team.</>
+            the quarter, up to the end of the selected period — our own sales, counted
+            the same way, but derived here rather than stated by the team.</>
         )}
         {split && <> Each quarter is split by product, since the targets are set that way.</>}
       </Explain>
@@ -97,7 +97,15 @@ export function QuarterPanel({ rows, funnel, oems = [] }: {
           return (
             <div key={`${r.fy_year}${r.quarter}`}>
               <div className="flex items-baseline justify-between mb-1.5">
-                <span className="text-xs font-bold text-gray-700">{r.label}</span>
+                <span className="text-xs font-bold text-gray-700">
+                  {r.label}
+                  {/* Quarter to date, so the bar matches the tiles above. */}
+                  {r.achievement == null && r.sold_through && r.sold_through < r.period_end && (
+                    <span className="ml-1.5 font-normal text-gray-500">
+                      achieved to {MONTH_SHORT[Number(r.sold_through.slice(5, 7)) - 1]}
+                    </span>
+                  )}
+                </span>
                 {/* Only the funnel OEMs can say how big the quarter was; for the
                     rest there is no total to report and the line stays off
                     rather than printing a zero. */}

@@ -90,9 +90,12 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
         : data.by_month.filter((m) => (!lo || m.month >= lo) && (!hi || m.month <= hi)),
       // A quarter counts if it OVERLAPS the period at all, and its target is
       // shown whole — slicing one would invent a number nobody agreed to.
+      // `sold` becomes quarter to date, matching the tab's Achieved % for the
+      // same period; All time keeps every quarter whole.
       targets: whole ? data.targets
         : data.targets.filter((t) =>
-          (!lo || t.period_end >= lo) && (!hi || t.period_start <= hi)),
+          (!lo || t.period_end >= lo) && (!hi || t.period_start <= hi))
+          .map((t) => ({ ...t, sold: t.sold_to_period })),
       history: whole ? data.history
         : data.history.filter((h) => h.visit_date
           && (!dLo || h.visit_date >= dLo) && (!dHi || h.visit_date <= dHi)),
@@ -244,10 +247,10 @@ export default function DealerDrawer({ dealerId, headers, benchmark, periodQuery
                       Target vs achievement panel below, so the three cannot
                       disagree. */}
                   <StatCard label="Target" value={n0(tgtTotals.target)}
-                    sub={view.whole ? "every quarter on record" : "whole quarter, never pro-rated"}
+                    sub={view.whole ? "every quarter on record" : "quarter target, not pro-rated"}
                     icon={<Target size={16} />} {...KPI.target} />
                   <StatCard label={L.sale} value={n0(tgtTotals.sold)}
-                    sub="our units inside that quarter"
+                    sub={view.whole ? "our units inside those quarters" : "quarter to date"}
                     icon={<Package size={16} />} {...KPI.ours} />
                   {/* A percentage, so it is named as one — this tile read
                       "vs Target" while showing achieved ÷ target, the same

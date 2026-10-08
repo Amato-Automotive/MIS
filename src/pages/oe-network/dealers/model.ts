@@ -141,6 +141,9 @@ export type DealerMonth = Partial<Funnel> & {
 export type DealerQuarter = Partial<Funnel> & {
   quarter: string; fy_year: number; label: string; period_start: string; period_end: string;
   target: number | null; achievement: number | null; sold: number;
+  /** Last month `sold` counts: the quarter's end, or the period's end when
+   *  that falls inside the quarter — quarter to date. */
+  sold_through?: string;
   /** Always present, with one entry for an OEM that sets a single target — so
    *  the panel never has to know which kind of file it is looking at. */
   by_product: QuarterProduct[];
@@ -153,10 +156,11 @@ export interface DealerPerf {
   capabilities: Capabilities;
   /** See FunnelScope. Null when `kpis` already carries the funnel. */
   funnel_scope: FunnelScope | null;
-  /** The whole-quarter window `kpis.sold` is summed over — targets are agreed
-   *  per quarter and never pro-rated, so the figure beside one covers the
-   *  quarter, not the month picked. Null when no quarter overlaps the period,
-   *  where `sold` genuinely is the selected months. */
+  /** The window `kpis.sold` is summed over: from the start of the first quarter
+   *  the period touches to the period's own end — quarter to date. Targets are
+   *  agreed per quarter and never pro-rated, so a month view compares
+   *  Jul–Aug's sales with the whole JAS target. Null when no quarter overlaps
+   *  the period, where `sold` genuinely is the selected months. */
   sold_scope: { month_from: string; month_to: string } | null;
   kpis: Funnel & {
     /** Dealerships (groups), which is what coverage is a share of. `outlets` is
@@ -217,6 +221,8 @@ export interface DealerDetail {
     period_start: string; period_end: string;
     product: string;
     target: number | null; achievement: number | null; sold: number | null;
+    /** `sold` stopped at the period the tab is filtered to (quarter to date). */
+    sold_to_period: number | null;
   }[];
   last_field_note: PerfContact | null;
   history: PerfContact[];

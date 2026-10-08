@@ -1,4 +1,4 @@
-import { Fragment, useState, useEffect, useCallback, useMemo } from "react";
+import { Fragment, useState, useEffect, useCallback, useMemo, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   CarFront, Phone, Footprints, Building2, Users, RefreshCw, Plus, Trash2,
@@ -1963,10 +1963,55 @@ interface HistoryItem {
   status: string; synced_at: string | null;
 }
 
+// Named after the TAB each sheet fills, not the sheet's own title. The team
+// adding a sheet thinks "the Dealers tab is empty", not "the dealership view
+// file is missing" — sheet-centric names meant they had to ask every time.
 const SHEET_TYPE_LABELS: Record<string, string> = {
-  visit_plan: "Visit Plan", log_book: "Log Book", targets: "Targets",
-  dealer_data: "Dealer Data", oem_target: "OEM Targets",
+  visit_plan: "Visit/Calling — Visit Plan", log_book: "Visit/Calling — Log Book",
+  targets: "Salesperson Targets", dealer_data: "Dealers", oem_target: "OEM Targets",
 };
+
+function SourceCardHead({ tab, sheet, note, action }: {
+  tab: string; sheet: string; note: ReactNode; action?: ReactNode;
+}) {
+  return (
+    <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
+      <div className="min-w-0 flex-1">
+        <h3 className="text-sm font-bold text-gray-800">{tab}</h3>
+        <p className="text-[11px] text-gray-600 mt-0.5">
+          Sheet to add: <span className="font-semibold text-gray-700">{sheet}</span>
+        </p>
+        <p className="text-[10px] text-gray-500 mt-0.5">{note}</p>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+// Monthly plans, quarterly targets and yearly summaries pile up, and only the
+// newest few are ever re-synced. The API returns each type newest first, so the
+// head of the list is what people come here for; the rest folds away.
+const SOURCES_VISIBLE = 3;
+
+function SourceList({ items, row, empty }: {
+  items: OESource[]; row: (s: OESource) => ReactNode; empty: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  if (items.length === 0) return <p className="text-xs text-gray-500 py-3">{empty}</p>;
+  const hidden = items.length - SOURCES_VISIBLE;
+  return (
+    <>
+      {(open ? items : items.slice(0, SOURCES_VISIBLE)).map(row)}
+      {hidden > 0 && (
+        <button onClick={() => setOpen(!open)}
+          className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-gray-600 hover:text-brand-orange">
+          <ChevronRight size={12} className={`transition-transform ${open ? "-rotate-90" : "rotate-90"}`} />
+          {open ? "Show fewer" : `Show ${hidden} older`}
+        </button>
+      )}
+    </>
+  );
+}
 
 function SheetsTab({ headers }: { headers: Record<string, string> }) {
   const toast = useToast();
@@ -1998,6 +2043,9 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
   // never move the other's selection.
   const [oemTgtFy, setOemTgtFy] = useState(String(now.getMonth() + 1 >= 4 ? now.getFullYear() : now.getFullYear() - 1));
   const [adding, setAdding] = useState(false);
+  // Closed by default: it is a diagnostic, and the header line already says
+  // whether the last run failed, which is the only thing usually wanted.
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const loadSources = useCallback(async () => {
     const res = await fetch(`${API_URL}/oe-network/sheet-sources`, { headers });
@@ -2091,6 +2139,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
     }
   };
 
+  const historyFailed = history.filter((h) => h.status === "Failed").length;
   const planSources = sources.filter((s) => s.sheet_type === "visit_plan");
   const logSources = sources.filter((s) => s.sheet_type === "log_book");
   const tgtSources = sources.filter((s) => s.sheet_type === "targets");
@@ -2143,16 +2192,14 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Visit plan sheets */}
         <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <div>
-              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Advance Visit Plans</h3>
-              <p className="text-[10px] text-gray-500">One sheet per month — salesperson tabs are detected automatically</p>
-            </div>
-            <button onClick={() => setShowAddPlan(!showAddPlan)}
-              className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
-              <Plus size={13} /> Add Month
-            </button>
-          </div>
+          <SourceCardHead tab="Visit/Calling" sheet="Advance Visit Plan (one per month)"
+            note="Salesperson tabs are detected automatically. This is the planned side of plan vs actual."
+            action={
+              <button onClick={() => setShowAddPlan(!showAddPlan)}
+                className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all shrink-0">
+                <Plus size={13} /> Add Month
+              </button>
+            } />
           <AnimatePresence>
             {showAddPlan && (
               <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
@@ -2171,25 +2218,20 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
               </motion.div>
             )}
           </AnimatePresence>
-          {planSources.length
-            ? planSources.map(sourceRow)
-            : <p className="text-xs text-gray-500 py-3">No visit plan sheets registered yet.</p>}
+          <SourceList items={planSources} row={sourceRow}
+            empty="No visit plan added yet — Visit/Calling has nothing to compare visits against until one is." />
         </div>
 
         {/* Log book */}
         <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <div>
-              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Log Book</h3>
-              <p className="text-[10px] text-gray-500">The continuous Google Form responses sheet</p>
-            </div>
-            {logSources.length === 0 && (
+          <SourceCardHead tab="Visit/Calling · Remarks · My Visits" sheet="Log Book (Google Form responses)"
+            note="Added once — new form entries arrive on every sync. This is the actual side of plan vs actual."
+            action={logSources.length === 0 && (
               <button onClick={() => setShowAddLog(!showAddLog)}
-                className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
+                className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all shrink-0">
                 <Plus size={13} /> Add Sheet
               </button>
-            )}
-          </div>
+            )} />
           <AnimatePresence>
             {showAddLog && (
               <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
@@ -2204,26 +2246,52 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
               </motion.div>
             )}
           </AnimatePresence>
-          {logSources.length
-            ? logSources.map(sourceRow)
-            : <p className="text-xs text-gray-500 py-3">No log book registered yet.</p>}
+          <SourceList items={logSources} row={sourceRow}
+            empty="No log book added yet — Visit/Calling, Remarks and My Visits stay empty until it is." />
         </div>
+      </div>
+
+      {/* Dealer data — one workbook, a tab per OEM, no period to pick: the
+          month columns are read off the header row, so a re-sync picks up a
+          newly added month on its own. */}
+      <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
+        <SourceCardHead tab="Dealers" sheet="Dealership view file (one workbook, a tab per OEM)"
+          note={<>Total &lt;OEM&gt;, YSASC and YS Sale per dealer per month, plus quarterly target
+            and achievement columns. Added once — new months are picked up on re-sync.</>}
+          action={
+            <button onClick={() => setShowAddDd(!showAddDd)}
+              className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all shrink-0 ml-auto">
+              <Plus size={13} /> Add Sheet
+            </button>
+          } />
+        <AnimatePresence>
+          {showAddDd && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+              <div className="bg-orange-50/50 rounded-xl p-3 my-2 flex gap-2">
+                <input value={ddLink} onChange={(e) => setDdLink(e.target.value)}
+                  placeholder="https://docs.google.com/spreadsheets/d/…" className={`${inputClass} flex-1`} />
+                <button onClick={() => handleAdd("dealer_data")} disabled={adding || !ddLink.trim()}
+                  className="text-xs font-semibold text-white px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-400 disabled:opacity-50 transition-all">
+                  {adding ? "Adding…" : "Add & Sync"}
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <SourceList items={ddSources} row={sourceRow}
+          empty="No dealership view file added yet — the Dealers tab stays empty until one is." />
       </div>
 
       {/* Quarterly targets */}
       <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-        <div className="flex items-center justify-between mb-2">
-          <div>
-            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Quarterly Targets</h3>
-            <p className="text-[10px] text-gray-500">
-              One sheet per quarter — OEM blocks are found by their headers, and money in crores is converted automatically
-            </p>
-          </div>
-          <button onClick={() => setShowAddTgt(!showAddTgt)}
-            className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all">
-            <Plus size={13} /> Add Quarter
-          </button>
-        </div>
+        <SourceCardHead tab="Salesperson Targets" sheet="Quarterly target sheet (one per quarter)"
+          note="OEM blocks are found by their headers, and money in crores is converted automatically."
+          action={
+            <button onClick={() => setShowAddTgt(!showAddTgt)}
+              className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all shrink-0">
+              <Plus size={13} /> Add Quarter
+            </button>
+          } />
         <AnimatePresence>
           {showAddTgt && (
             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
@@ -2242,9 +2310,8 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
             </motion.div>
           )}
         </AnimatePresence>
-        {tgtSources.length
-          ? tgtSources.map(sourceRow)
-          : <p className="text-xs text-gray-500 py-3">No target sheets registered yet.</p>}
+        <SourceList items={tgtSources} row={sourceRow}
+          empty="No quarterly target sheet added yet — the Salesperson Targets tab stays empty until one is." />
       </div>
 
       {/* OEM target summary — one workbook per FINANCIAL year, a tab per OEM.
@@ -2252,20 +2319,16 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
           and only the achievement columns fill in, so a re-sync is the normal
           way to pick up a new month. */}
       <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-        <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
-          <div className="min-w-0 flex-1">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">OEM Target Summary</h3>
-            <p className="text-[10px] text-gray-500">
-              The brand-level year — one tab per OEM, one row per product, twelve months of
-              target and achievement. Columns are found by their headers and each money column&rsquo;s
-              scale is detected on its own, because the file mixes rupees and crores within a tab.
-            </p>
-          </div>
-          <button onClick={() => setShowAddOemTgt(!showAddOemTgt)}
-            className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all shrink-0 ml-auto">
-            <Plus size={13} /> Add Year
-          </button>
-        </div>
+        <SourceCardHead tab="OEM Targets" sheet="OEM Target Summary (one per financial year)"
+          note={<>One tab per OEM, one row per product, twelve months of target and achievement.
+            Columns are found by their headers and each money column&rsquo;s scale is detected on
+            its own, because the file mixes rupees and crores within a tab.</>}
+          action={
+            <button onClick={() => setShowAddOemTgt(!showAddOemTgt)}
+              className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all shrink-0 ml-auto">
+              <Plus size={13} /> Add Year
+            </button>
+          } />
         <AnimatePresence>
           {showAddOemTgt && (
             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
@@ -2283,45 +2346,8 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
             </motion.div>
           )}
         </AnimatePresence>
-        {oemTgtSources.length
-          ? oemTgtSources.map(sourceRow)
-          : <p className="text-xs text-gray-500 py-3">No OEM target summary registered yet.</p>}
-      </div>
-
-      {/* Dealer data — one workbook, a tab per OEM, no period to pick: the
-          month columns are read off the header row, so a re-sync picks up a
-          newly added month on its own. */}
-      <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-        <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
-          <div className="min-w-0 flex-1">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Dealer Data</h3>
-            <p className="text-[10px] text-gray-500">
-              The dealership view file — Total &lt;OEM&gt;, YSASC and YS Sale per dealer per
-              month, plus quarterly target and achievement columns
-            </p>
-          </div>
-          <button onClick={() => setShowAddDd(!showAddDd)}
-            className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-brand-orange px-3 py-1.5 rounded-xl border border-gray-200 hover:border-orange-200 transition-all shrink-0 ml-auto">
-            <Plus size={13} /> Add Sheet
-          </button>
-        </div>
-        <AnimatePresence>
-          {showAddDd && (
-            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
-              <div className="bg-orange-50/50 rounded-xl p-3 my-2 flex gap-2">
-                <input value={ddLink} onChange={(e) => setDdLink(e.target.value)}
-                  placeholder="https://docs.google.com/spreadsheets/d/…" className={`${inputClass} flex-1`} />
-                <button onClick={() => handleAdd("dealer_data")} disabled={adding || !ddLink.trim()}
-                  className="text-xs font-semibold text-white px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-400 disabled:opacity-50 transition-all">
-                  {adding ? "Adding…" : "Add & Sync"}
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-        {ddSources.length
-          ? ddSources.map(sourceRow)
-          : <p className="text-xs text-gray-500 py-3">No dealer data sheet registered yet.</p>}
+        <SourceList items={oemTgtSources} row={sourceRow}
+          empty="No OEM Target Summary added yet — the OEM Targets tab stays empty until one is." />
       </div>
 
       {/* Last sync result */}
@@ -2349,10 +2375,21 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
 
       {/* Sync history */}
       <div className="bg-white border border-orange-100 rounded-2xl p-5 shadow-sm">
-        <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3 flex items-center gap-1.5">
-          <History size={13} /> Sync History
-        </h3>
-        <div className="overflow-x-auto">
+        <button onClick={() => setHistoryOpen(!historyOpen)}
+          className="w-full flex items-center justify-between gap-3 text-left">
+          <span className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+            <History size={13} /> Sync History
+          </span>
+          <span className="flex items-center gap-2 text-[11px] text-gray-500 min-w-0">
+            <span className="truncate">
+              {history.length === 0 ? "No syncs yet"
+                : <>Last run {history[0].synced_at ? formatDate(history[0].synced_at) : "—"}
+                    {historyFailed > 0 && <span className="text-red-600 font-semibold"> · {historyFailed} failed</span>}</>}
+            </span>
+            <ChevronRight size={14} className={`shrink-0 transition-transform ${historyOpen ? "rotate-90" : ""}`} />
+          </span>
+        </button>
+        {historyOpen && <div className="overflow-x-auto mt-3">
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 border-b border-gray-100">
@@ -2385,7 +2422,7 @@ function SheetsTab({ headers }: { headers: Record<string, string> }) {
               )}
             </tbody>
           </table>
-        </div>
+        </div>}
       </div>
     </div>
   );

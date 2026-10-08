@@ -362,7 +362,7 @@ function OverviewTab({ headers }: { headers: Record<string, string> }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period.options]);
 
-  const { syncing, syncAll } = useSyncLatest(headers, () => setRefresh((x) => x + 1));
+  const { syncing, syncAll } = useSyncLatest(headers, () => setRefresh((x) => x + 1), ["log", "plan"]);
 
   useEffect(() => {
     const pp = periodParams(period.mode, period.token, period.range);
@@ -1304,6 +1304,7 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
   const [data, setData] = useState<RemarksData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
+  const { syncing, syncAll } = useSyncLatest(headers, () => setRefreshKey((k) => k + 1), ["log"]);
 
   useEffect(() => {
     const t = setTimeout(() => setQDeb(q.trim()), 400);
@@ -1415,6 +1416,8 @@ function FieldActivityTab({ headers }: { headers: Record<string, string> }) {
         <FilterSpinner show={loading} />
         <FilterActions>
           <RefreshButton onClick={() => setRefreshKey((k) => k + 1)} disabled={loading} />
+          <SyncButton onClick={syncAll} syncing={syncing}
+            title="Re-pull the log book from Google Sheets" />
           <PdfButton />
         </FilterActions>
       </FilterBar>
@@ -1631,6 +1634,7 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const { syncing, syncAll } = useSyncLatest(headers, () => setRefreshKey((k) => k + 1), ["targets"]);
 
   useEffect(() => {
     (async () => {
@@ -1771,6 +1775,8 @@ function TargetsTab({ headers }: { headers: Record<string, string> }) {
         <FilterSpinner show={loading} />
         <FilterActions>
           <RefreshButton onClick={() => setRefreshKey((k) => k + 1)} disabled={loading} />
+          <SyncButton onClick={syncAll} syncing={syncing}
+            title="Re-pull the latest quarter's target sheet from Google Sheets" />
           <PdfButton />
         </FilterActions>
       </FilterBar>

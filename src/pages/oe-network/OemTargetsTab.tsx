@@ -127,7 +127,7 @@ export default function OemTargetsTab({ headers }: { headers: Record<string, str
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const { syncing, syncAll } = useSyncLatest(headers, () => setRefreshKey((n) => n + 1));
+  const { syncing, syncAll } = useSyncLatest(headers, () => setRefreshKey((n) => n + 1), ["oem_targets"]);
 
   useEffect(() => {
     (async () => {
@@ -277,7 +277,8 @@ export default function OemTargetsTab({ headers }: { headers: Record<string, str
         <FilterSpinner show={loading} />
         <FilterActions>
           <RefreshButton onClick={() => setRefreshKey((n) => n + 1)} disabled={loading} />
-          <SyncButton onClick={syncAll} syncing={syncing} />
+          <SyncButton onClick={syncAll} syncing={syncing}
+            title="Re-pull this year's OEM Target Summary from Google Sheets" />
           <PdfButton />
         </FilterActions>
       </FilterBar>

@@ -115,3 +115,22 @@ def test_the_claim_is_taken_before_the_google_fetch():
     assert lock < min(fetches), (
         "the source is claimed after the sheet is fetched, so a losing caller "
         "still pays the full Google API cost before being turned away")
+
+
+# ── Per-tab sync ──────────────────────────────────────────────────────────────
+
+def test_no_sheets_param_still_syncs_everything():
+    assert oe.parse_sync_sheets(None) == set(oe.SYNC_SHEET_KEYS)
+    assert oe.parse_sync_sheets("  ") == set(oe.SYNC_SHEET_KEYS)
+
+
+def test_a_tab_gets_only_the_sheets_it_names():
+    assert oe.parse_sync_sheets("log, plan") == {"log", "plan"}
+
+
+def test_an_unknown_sheet_key_is_refused_not_dropped():
+    """Dropping it would sync less than asked and report success."""
+    with pytest.raises(oe.HTTPException) as e:
+        oe.parse_sync_sheets("log,dealer")
+    assert e.value.status_code == 400
+    assert "dealer" in e.value.detail

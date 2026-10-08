@@ -18,6 +18,7 @@ import {
   API_URL, FilterBar, FilterActions, ClearFilters, FilterSpinner, RefreshButton,
   FILTER_LABELS, filterOpts, PeriodControls, usePeriod, periodParams,
   useFilterOptions, shortDate, ModeBadge, StatCard, KPI, useOEScope, ScopeNote,
+  SyncButton, useSyncLatest,
 } from "./shared";
 
 interface VisitRow {
@@ -93,6 +94,9 @@ export default function MyVisitsTab({ headers }: { headers: Record<string, strin
   const [error, setError] = useState("");
   const [exporting, setExporting] = useState<"csv" | "xlsx" | null>(null);
   const [refresh, setRefresh] = useState(0);
+  // A rep's usual reason to open this tab is checking the visit they just
+  // filed, so the log book is a press away instead of a trip to another tab.
+  const { syncing, syncAll } = useSyncLatest(headers, () => setRefresh((x) => x + 1), ["log"]);
 
   const [oem, setOem] = useState("");
   const [mode, setMode] = useState("");
@@ -221,6 +225,8 @@ export default function MyVisitsTab({ headers }: { headers: Record<string, strin
         <FilterSpinner show={loading} />
         <FilterActions>
           <RefreshButton onClick={() => setRefresh((x) => x + 1)} disabled={loading} />
+          <SyncButton onClick={syncAll} syncing={syncing}
+            title="Re-pull the log book from Google Sheets" />
           {/* Export, not PDF: the point of this tab is handing the rows to
               somebody else, and a spreadsheet is what they are asked for. */}
           <button onClick={() => doExport("csv")} disabled={exporting !== null || total === 0}

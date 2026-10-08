@@ -4,7 +4,7 @@ import { Store, Target, CarFront, Percent, Package, Barcode } from "lucide-react
 import Select from "@/components/ui/Select";
 import {
   API_URL, MONTH_SHORT, FilterBar, FilterActions, ClearFilters, FilterSpinner,
-  RefreshButton, PdfButton, PeriodControls, StatCard,
+  RefreshButton, PdfButton, SyncButton, useSyncLatest, PeriodControls, StatCard,
   periodParams, usePeriod, useFilterOptions, filterOpts, FILTER_LABELS,
   shortDate, useOEScope, ScopeNote, type Period,
 } from "../shared";
@@ -46,6 +46,9 @@ export default function DealersTab({ headers }: { headers: Record<string, string
   const [openDealer, setOpenDealer] = useState<string | null>(null);
   // Bumped by Refresh — re-runs the fetch without changing any filter.
   const [refreshKey, setRefreshKey] = useState(0);
+  // The log book too: each dealership's visit history and contact effect
+  // come from it, not from the dealer file.
+  const { syncing, syncAll } = useSyncLatest(headers, () => setRefreshKey((n) => n + 1), ["dealers", "log"]);
 
   // The months the dealer file covers, fetched up front. This cannot come from
   // the dealer-performance response the way it used to: the period picker now
@@ -199,6 +202,8 @@ export default function DealersTab({ headers }: { headers: Record<string, string
         <FilterSpinner show={loading} />
         <FilterActions>
           <RefreshButton onClick={() => setRefreshKey((n) => n + 1)} disabled={loading} />
+          <SyncButton onClick={syncAll} syncing={syncing}
+            title="Re-pull the dealership view file and the log book from Google Sheets" />
           <PdfButton />
         </FilterActions>
       </FilterBar>

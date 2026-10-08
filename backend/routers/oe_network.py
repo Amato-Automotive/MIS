@@ -780,47 +780,78 @@ def sync_sheet_source(
     return _do_sync(db, source, current_user)
 
 
+# What a tab's Sync button may ask for. Each tab pulls only the sheets it draws
+# from: one shared button that pulled everything made Visit/Calling re-download
+# the dealer file and both target sheets, and how many it pulled varied with the
+# cooldown, so the same press looked different from one minute to the next.
+SYNC_SHEET_KEYS = ("log", "plan", "dealers", "targets", "oem_targets")
+
+
+def parse_sync_sheets(raw: str | None) -> set[str]:
+    """`?sheets=log,plan` → {"log", "plan"}; absent means every key. An unknown
+    key is refused rather than dropped — silently syncing less than was asked
+    for would look exactly like a sync that found nothing new."""
+    if raw is None or not raw.strip():
+        return set(SYNC_SHEET_KEYS)
+    keys = {k.strip() for k in raw.split(",") if k.strip()}
+    unknown = keys - set(SYNC_SHEET_KEYS)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown sheet key(s): {', '.join(sorted(unknown))}. "
+                   f"Use any of: {', '.join(SYNC_SHEET_KEYS)}")
+    return keys
+
+
 @router.post("/sync-latest")
 def sync_latest(
+    sheets: str | None = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """One-click refresh for the Overview: the log book and the dealer file both
-    keep growing, and only the newest visit-plan month, target quarter and OEM
-    target year still change, so those are the sheets worth re-pulling —
-    earlier periods are frozen history."""
+    """One-click refresh for a tab: the log book and the dealer file both keep
+    growing, and only the newest visit-plan month, target quarter and OEM target
+    year still change, so those are the sheets worth re-pulling — earlier
+    periods are frozen history. `sheets` narrows it to the tab's own sources."""
     _scope(db, current_user)
-    sources = db.query(SheetSource).filter(
-        SheetSource.module.in_((MODULE_LOG, MODULE_DD))).all()
-    newest_plan = (
-        db.query(SheetSource)
-        .filter(SheetSource.module == MODULE_PLAN)
-        .order_by(SheetSource.calendar_year.desc(), SheetSource.month.desc())
-        .first()
-    )
-    if newest_plan:
-        sources.append(newest_plan)
-    newest_targets = (
-        db.query(SheetSource)
-        .filter(SheetSource.module == MODULE_TGT)
-        .order_by(SheetSource.calendar_year.desc(), SheetSource.quarter.desc())
-        .first()
-    )
-    if newest_targets:
-        sources.append(newest_targets)
+    wanted = parse_sync_sheets(sheets)
+    growing = [m for k, m in (("log", MODULE_LOG), ("dealers", MODULE_DD)) if k in wanted]
+    sources = (db.query(SheetSource).filter(SheetSource.module.in_(growing)).all()
+               if growing else [])
+    if "plan" in wanted:
+        newest_plan = (
+            db.query(SheetSource)
+            .filter(SheetSource.module == MODULE_PLAN)
+            .order_by(SheetSource.calendar_year.desc(), SheetSource.month.desc())
+            .first()
+        )
+        if newest_plan:
+            sources.append(newest_plan)
+    if "targets" in wanted:
+        newest_targets = (
+            db.query(SheetSource)
+            .filter(SheetSource.module == MODULE_TGT)
+            .order_by(SheetSource.calendar_year.desc(), SheetSource.quarter.desc())
+            .first()
+        )
+        if newest_targets:
+            sources.append(newest_targets)
     # The current FY's OEM summary is a live sheet all year: the targets are
     # set once but a month of achievement lands in it every month, so the
     # newest year is always worth re-pulling.
-    newest_oem_targets = (
-        db.query(SheetSource)
-        .filter(SheetSource.module == MODULE_OEMTGT)
-        .order_by(SheetSource.calendar_year.desc())
-        .first()
-    )
-    if newest_oem_targets:
-        sources.append(newest_oem_targets)
+    if "oem_targets" in wanted:
+        newest_oem_targets = (
+            db.query(SheetSource)
+            .filter(SheetSource.module == MODULE_OEMTGT)
+            .order_by(SheetSource.calendar_year.desc())
+            .first()
+        )
+        if newest_oem_targets:
+            sources.append(newest_oem_targets)
     if not sources:
-        raise HTTPException(status_code=400, detail="No sheets registered yet")
+        raise HTTPException(
+            status_code=400,
+            detail="No sheet for this tab has been added yet — add it from the Data Source Sheets tab")
 
     results = []
     for source in sources:

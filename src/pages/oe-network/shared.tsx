@@ -630,17 +630,22 @@ function agoLabel(iso: string | null): string {
  * stampede, the exact thing the lock and the cooldown exist to prevent. A
  * second copy of this logic is a second chance to get that wrong.
  *
- * `onDone` is called after a run that changed anything, so the caller can
- * re-query.
+ * `sheets` is the tab's own sources and is required, so a new tab cannot fall
+ * back to pulling every sheet the module has. `onDone` is called after a run
+ * that changed anything, so the caller can re-query.
  */
-export function useSyncLatest(headers: Record<string, string>, onDone: () => void) {
+export type SyncSheet = "log" | "plan" | "dealers" | "targets" | "oem_targets";
+
+export function useSyncLatest(
+  headers: Record<string, string>, onDone: () => void, sheets: SyncSheet[],
+) {
   const toast = useToast();
   const [syncing, setSyncing] = useState(false);
 
   const syncAll = async () => {
     setSyncing(true);
     try {
-      const res = await fetch(`${API_URL}/oe-network/sync-latest`, { method: "POST", headers });
+      const res = await fetch(`${API_URL}/oe-network/sync-latest?sheets=${sheets.join(",")}`, { method: "POST", headers });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "Sync failed");
       const results: SyncOutcome[] = data.results;

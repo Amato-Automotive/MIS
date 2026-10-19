@@ -422,6 +422,9 @@ export const KPI = {
   neutral:    { color: "#6b7280",   bg: "#f3f4f6" },
   /** Needs attention but isn't yet a failure. */
   warning:    { color: "#d97706",   bg: "#fffbeb" },
+  /** Coming up — not wrong yet, worth a look this week. The step before
+   *  `warning` on a traffic light (Export lead health). */
+  caution:    { color: "#ca8a04",   bg: "#fefce8" },
   /** Missed, stale, overdue. */
   danger:     { color: "#dc2626",   bg: "#fef2f2" },
 } as const;

@@ -439,6 +439,12 @@ function AccessFields({
           </button>
         ))}
       </div>
+      {modules.includes("chat") && (
+        <p className="text-xs text-gray-500">
+          The AI Assistant answers only from the modules ticked here, and from the Finance companies and OE
+          scope below — it grants no data of its own.
+        </p>
+      )}
 
       {modules.includes("oe_network") && (
         <div className="mt-1 flex flex-col gap-2 rounded-xl border border-gray-100 bg-gray-50/60 p-3">

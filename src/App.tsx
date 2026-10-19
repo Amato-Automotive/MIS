@@ -10,7 +10,8 @@ import FinancePage from "@/pages/FinancePage";
 import OENetworkPage from "@/pages/OENetworkPage";
 import LeadsPage from "@/pages/LeadsPage";
 import SheetGuidePage from "@/pages/SheetGuidePage";
-import ExportPage from "@/pages/ExportPage";
+import ExportPage from "@/pages/export/ExportPage";
+import AssistantPage from "@/pages/AssistantPage";
 import { ToastProvider } from "@/components/ui/Toast";
 import ProfilePage from "@/pages/ProfilePage";
 import UsersPage from "@/pages/UsersPage";
@@ -85,6 +86,7 @@ function AppRoutes() {
         <Route path="leads/upload" element={<Navigate to="/dashboard/leads" replace />} />
         <Route path="sheet-guide" element={<SheetGuidePage />} />
         <Route path="export" element={<ExportPage />} />
+        <Route path="assistant" element={<AssistantPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="profile" element={<ProfilePage />} />
       </Route>

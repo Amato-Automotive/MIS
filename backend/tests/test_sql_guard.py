@@ -40,7 +40,10 @@ def test_reads_pass(q):
     ("WITH m AS (SELECT 1 AS x) SELECT m.*, l.mobile FROM m JOIN leads l ON true", "SELECT \\* on a table"),
     ("COPY leads TO STDOUT", "Only SELECT"),
     ("", "Empty"),
-], ids=range(18))
+    # Seen on prod: a stray trailing quote is a TokenError, not a ParseError,
+    # and must come back to the model as a refusal it can fix.
+    ('SELECT count(*) FROM oe_visit_plans WHERE plan_year = 2026 AND plan_month = 9"', "Could not parse"),
+], ids=range(19))
 def test_refused(q, why):
     with pytest.raises(GuardError, match=why):
         guard_sql(q)

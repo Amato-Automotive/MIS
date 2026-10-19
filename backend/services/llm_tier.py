@@ -108,11 +108,12 @@ class AnthropicTier:
 
     @staticmethod
     def _tools(tools: list) -> list:
-        # eager_input_streaming: inputs stream as generated rather than in one
-        # burst. It also means the server no longer validates them, so the loop
-        # validates every input before running anything.
-        return [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"],
-                 "eager_input_streaming": True} for t in tools]
+        # No eager_input_streaming: with it the server stops validating tool
+        # inputs, and on prod (2026-10-19) Haiku's queries then arrived with a
+        # stray trailing `"`. Our inputs are one short SQL string — there is
+        # nothing to gain from streaming them.
+        return [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
+                for t in tools]
 
     def run(self, system: str, messages: list, tools: list) -> Generator[str, None, TurnResult]:
         """One model call. Yields the answer's text as it streams; returns the

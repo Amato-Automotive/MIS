@@ -110,8 +110,11 @@ def guard_sql(query: str) -> tuple[str, SqlShape]:
         raise GuardError("Query too long — simplify it.")
     try:
         statements = [s for s in sqlglot.parse(q, read="postgres") if s is not None]
-    except sqlglot.errors.ParseError as e:
-        raise GuardError(f"Could not parse the SQL: {str(e).splitlines()[0]}") from None
+    except sqlglot.errors.SqlglotError as e:
+        # ParseError and TokenError alike: the model can fix either, but only
+        # if it is told — an uncaught TokenError used to end the whole question.
+        raise GuardError(f"Could not parse the SQL (check quotes and brackets): "
+                         f"{str(e).splitlines()[0][:200]}") from None
     if len(statements) != 1:
         raise GuardError("Send exactly one SELECT statement.")
     stmt = statements[0]

@@ -121,8 +121,11 @@ def _context(user: User, scope: ChatScope) -> str:
             lines.append("Finance: no companies granted yet, so Finance tables return no rows.")
     if "oe_network" in scope.modules and scope.oe_scoped:
         lines.append(f"OE Network: this user is the field rep {scope.oe_salesperson}. OE rows are limited to "
-                     "their own visits, plans and targets and the dealers assigned to them; OEM brand "
-                     "targets are not available to them. Say 'your' figures, never the company's.")
+                     "their own visits, plans and targets and the dealers assigned to them. Say 'your' "
+                     "figures, never the company's. OEM brand targets (oe_oem_targets, "
+                     "oe_oem_target_annual) are management-only: if they ask about brand or OEM-level "
+                     "targets, do not query — tell them that is not available to their account and offer "
+                     "their own salesperson targets instead. Never call it 'no data'.")
     return "\n".join(lines)
 
 

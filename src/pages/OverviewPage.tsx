@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { TrendingUp, BarChart2, Wallet, UserCog, ArrowUpRight, LayoutDashboard, CarFront, Globe2 } from "lucide-react";
+import { TrendingUp, BarChart2, Wallet, UserCog, ArrowUpRight, LayoutDashboard, CarFront, Globe2, Sparkles } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { ModuleKey, canAccessModule } from "@/lib/modules";
 
@@ -66,6 +66,16 @@ const TILES: ModuleTile[] = [
     color: "#64748b",
     bg: "#f1f5f9",
     moduleKey: "export",
+  },
+  {
+    id: "assistant",
+    label: "AI Assistant",
+    description: "Ask about your data in plain English",
+    icon: <Sparkles size={24} />,
+    path: "/dashboard/assistant",
+    color: "#f46617",
+    bg: "#fff4ed",
+    moduleKey: "chat",
   },
   {
     id: "users",

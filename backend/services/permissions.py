@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from models import User, UserModuleAccess, UserSheetSourceAccess, SheetSource
 
-VALID_MODULES = {"sales", "leads", "finance", "oe_network", "export"}
+# "chat" is the AI assistant. Unlike the others it is a door, not data: what a
+# user can ask about is still decided by the data modules they hold
+# (services/chat_scope.py:DATA_MODULES deliberately leaves it out).
+VALID_MODULES = {"sales", "leads", "finance", "oe_network", "export", "chat"}
 
 
 def user_has_module(db: Session, user: User, module: str) -> bool:

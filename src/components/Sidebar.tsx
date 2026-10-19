@@ -10,6 +10,7 @@ import {
   FileSpreadsheet,
   CarFront,
   Globe2,
+  Sparkles,
 } from "lucide-react";
 import { useAuth, UserRole } from "@/context/AuthContext";
 import { ModuleKey, canAccessModule } from "@/lib/modules";
@@ -68,6 +69,13 @@ const NAV_ITEMS: NavItem[] = [
     icon: <Globe2 size={16} />,
     path: "/dashboard/export",
     moduleKey: "export",
+  },
+  {
+    id: "assistant",
+    label: "AI Assistant",
+    icon: <Sparkles size={16} />,
+    path: "/dashboard/assistant",
+    moduleKey: "chat",
   },
   {
     id: "users",

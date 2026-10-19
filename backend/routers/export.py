@@ -42,7 +42,8 @@ from database import get_db
 from models import SheetSource, SyncLog, User
 from routers.auth import get_current_user
 from routers.oe_network import _bulk_insert, _db_message
-from services.export_history import build_period, diff_leads, stage_entries
+from services.export_health import LEVELS, LEVEL_LABELS, build_health
+from services.export_history import build_period, closed_on, diff_leads, stage_entries
 from services.export_leads_sync import (
     ACTIVITY_TYPES, LOST_REASONS, REGION_LABELS, REGIONS, STAGES, STATUSES,
     build_summary, company_key, enrich, parse_leads,
@@ -69,7 +70,7 @@ _LOCAL_DAY = "CAST((observed_at AT TIME ZONE 'Asia/Kolkata') AS date)"
 
 _LEAD_COLS = ("id", "sheet_source_id", "sheet_row", "company", "owner", "customer_type",
               "country", "region", "city", "contact_person", "contact_email", "contact_phone",
-              "stage_no", "stage_since", "status", "closed_date", "lost_reason", "potential_cr",
+              "stage_no", "status", "target_close_date", "lost_reason", "potential_cr",
               "last_contact", "next_action", "next_action_date", "source", "remarks", "sync_log_id")
 # Everything a reader sees; ids and provenance stay server-side.
 _READ_COLS = [c for c in _LEAD_COLS if c not in ("id", "sheet_source_id", "sync_log_id")]
@@ -77,7 +78,7 @@ _ACTIVITY_COLS = ("id", "sheet_source_id", "sheet_row", "activity_date", "compan
                   "matched", "activity_type", "by_person", "notes", "sync_log_id")
 _EVENT_COLS = ("id", "company", "company_key", "kind", "from_stage", "to_stage",
                "from_status", "to_status", "sync_log_id")
-_DATE_FIELDS = ("stage_since", "last_contact", "next_action_date", "closed_date")
+_DATE_FIELDS = ("last_contact", "next_action_date", "target_close_date")
 
 
 def _require_access(db: Session, current_user: User) -> None:
@@ -282,16 +283,19 @@ def sync_history(db: Session = Depends(get_db), current_user: User = Depends(get
 def _filters(
     owner: Optional[str] = None,
     customer_type: Optional[str] = None,
-    region: Optional[str] = Query(None, description="UK | EU | AU"),
+    region: Optional[str] = Query(None, description="UK | EU | AU | OTH"),
     country: Optional[str] = None,
     stage: Optional[int] = Query(None, ge=1, le=11),
     status: Optional[str] = Query(None, description="Active | On Hold | Won | Lost"),
     source: Optional[str] = None,
+    health: Optional[str] = Query(None, description="critical | at_risk | watch | on_track | parked | unknown"),
     q: Optional[str] = Query(None, description="Free text over company, contact, city, next action, remarks"),
     stale_days: int = Query(DEFAULT_STALE_DAYS, ge=1, le=365),
 ) -> dict:
+    if health and health not in LEVELS:
+        raise HTTPException(status_code=400, detail=f"health must be one of {', '.join(LEVELS)}")
     return dict(owner=owner, customer_type=customer_type, region=region, country=country,
-                stage=stage, status=status, source=source, q=q, stale_days=stale_days)
+                stage=stage, status=status, source=source, health=health, q=q, stale_days=stale_days)
 
 
 def _lead_filtered(f: dict) -> bool:
@@ -310,7 +314,7 @@ def _stage_entries(db: Session) -> dict:
     return stage_entries([dict(r) for r in rows])
 
 
-def _load(db: Session, owner, customer_type, region, country, stage, status, source, q,
+def _load(db: Session, owner, customer_type, region, country, stage, status, source, health, q,
           stale_days: int) -> list:
     """Filtered, enriched leads. Shared by every read endpoint so they cannot
     disagree about which rows a filter selects."""
@@ -340,6 +344,10 @@ def _load(db: Session, owner, customer_type, region, country, stage, status, sou
         kind, on = entries.get(company_key(d["company"]), (None, None))
         d["stage_entered_kind"], d["stage_entered_on"] = kind, on
         out.append(enrich(d, today, stale_days))
+    # Health is derived, so it is the one filter applied after the query. A
+    # closed lead has no health and drops out of any health filter.
+    if health:
+        out = [r for r in out if r["health"] and r["health"]["level"] == health]
     return out
 
 
@@ -378,6 +386,8 @@ def filter_options(db: Session = Depends(get_db), current_user: User = Depends(g
         "stages": [{"value": n, "label": f"{n} - {name}"} for n, name in STAGES.items()],
         "statuses": list(STATUSES),
         "sources": distinct("source"),
+        # Fixed vocabulary, offered whole and worst first.
+        "health": [{"value": lv, "label": LEVEL_LABELS[lv]} for lv in LEVELS],
     }
 
 
@@ -388,13 +398,48 @@ def summary(f: dict = Depends(_filters), db: Session = Depends(get_db),
     _require_access(db, current_user)
     rows = _load(db, **f)
     since = _tracking_since(db)
+    today = date.today()
     return {
-        **build_summary(rows, date.today(), f["stale_days"]),
+        **build_summary(rows, today, f["stale_days"]),
+        "health": build_health(rows, today, REGION_LABELS, REGIONS, STAGES),
+        "recent": _recent(db, rows, today, _lead_filtered(f)),
         "lost_reason_options": list(LOST_REASONS),
         "tracking_since": since.isoformat() if since else None,
         "region_labels": REGION_LABELS,
         "sync": _sync_meta(db),
     }
+
+
+# The Highlights tab's "what changed" strip. A fixed window rather than the
+# Activity tab's period picker: Highlights is the page someone opens to find
+# out what needs doing, and the last 30 days is the question it answers.
+RECENT_DAYS = 30
+
+
+def _recent(db: Session, leads_: list, today: date, filtered: bool) -> dict:
+    d1 = date.fromordinal(today.toordinal() - RECENT_DAYS + 1)
+    events, acts = _history(db)
+    if filtered:
+        keys = {company_key(l["company"]) for l in leads_}
+        events = [e for e in events if e["company_key"] in keys]
+        acts = [a for a in acts if a["company_key"] in keys]
+    p = build_period(events, acts, leads_, d1, today, ACTIVITY_TYPES, feed_limit=8)
+    return {"days": RECENT_DAYS, "from": d1.isoformat(), "movement": p["movement"],
+            "touches": p["activity"]["touches"], "companies": p["activity"]["companies"],
+            "feed": p["feed"], "feed_total": p["feed_total"]}
+
+
+def _history(db: Session):
+    events = [dict(r) for r in db.execute(text(f"""
+        SELECT company, company_key, kind, from_stage, to_stage, from_status, to_status,
+               {_LOCAL_DAY} AS observed_on
+        FROM export_lead_events ORDER BY observed_at
+    """)).mappings()]
+    acts = [dict(r) for r in db.execute(text("""
+        SELECT activity_date, company, company_key, matched, activity_type, by_person, notes
+        FROM export_activities ORDER BY activity_date, sheet_row
+    """)).mappings()]
+    return events, acts
 
 
 @router.get("/leads")
@@ -416,7 +461,13 @@ def leads(f: dict = Depends(_filters), db: Session = Depends(get_db),
         recent.setdefault(a["company_key"], []).append({
             "date": a["activity_date"].isoformat(), "activity_type": a["activity_type"],
             "by_person": a["by_person"], "notes": a["notes"]})
+    status_events = [dict(e) for e in db.execute(text(f"""
+        SELECT company_key, to_status, {_LOCAL_DAY} AS observed_on
+        FROM export_lead_events WHERE kind = 'status'
+    """)).mappings()]
     for r in rows:
+        on = closed_on(r, status_events)
+        r["closed_on"] = on.isoformat() if on else None
         for k in _DATE_FIELDS:
             if r[k] is not None:
                 r[k] = r[k].isoformat()
@@ -454,9 +505,6 @@ def periods(db: Session = Depends(get_db), current_user: User = Depends(get_curr
             FROM export_lead_events WHERE kind <> 'baseline'
             UNION ALL
             SELECT EXTRACT(YEAR FROM activity_date), EXTRACT(MONTH FROM activity_date) FROM export_activities
-            UNION ALL
-            SELECT EXTRACT(YEAR FROM closed_date), EXTRACT(MONTH FROM closed_date)
-            FROM export_leads WHERE closed_date IS NOT NULL
         ) t ORDER BY y DESC, m DESC
     """)).fetchall()
     since = _tracking_since(db)
@@ -488,15 +536,7 @@ def activity(
     filtered = _lead_filtered(f)
     keys = {company_key(l["company"]) for l in leads_}
 
-    events = [dict(r) for r in db.execute(text(f"""
-        SELECT company, company_key, kind, from_stage, to_stage, from_status, to_status,
-               {_LOCAL_DAY} AS observed_on
-        FROM export_lead_events ORDER BY observed_at
-    """)).mappings()]
-    acts = [dict(r) for r in db.execute(text("""
-        SELECT activity_date, company, company_key, matched, activity_type, by_person, notes
-        FROM export_activities ORDER BY activity_date, sheet_row
-    """)).mappings()]
+    events, acts = _history(db)
     if filtered:
         events = [e for e in events if e["company_key"] in keys]
         acts = [a for a in acts if a["company_key"] in keys]

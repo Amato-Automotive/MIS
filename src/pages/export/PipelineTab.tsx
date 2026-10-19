@@ -1,25 +1,29 @@
-// Export › Pipeline — where the UK / EU / AU leads stand today.
+// Export › Pipeline — where the export leads stand today.
 //
 // Everything here is a snapshot: the sheet is overwritten as leads move, so
-// there is no "last month" to compare with. Ageing comes from the team's own
-// dates — Stage Since and Last Contact — measured against today.
+// there is no "last month" to compare with. Ageing comes from Last Contact
+// (the Activity tab), the Target Closure Date, and the stage moves the sync
+// has seen — all measured against today.
 //
-// Most of this list is still unfilled (no estimate, no Stage Since), so every
+// Most of this list is still unfilled (no estimate, no target date), so every
 // figure says how much of the list it actually covers, and the Data Gaps panel
 // at the bottom is the to-do list for the export team.
 import { Briefcase, IndianRupee, Trophy, Clock, AlarmClock } from "lucide-react";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid } from "recharts";
 import Select from "@/components/ui/Select";
 import Explain from "../oe-network/dealers/Explain";
 import {
-  StatCard, KPI, VISIT_COLOR, TGT_TRACK, Panel, fmtCr, potCoverage, fmtDay, fmtDays, plural, NOT_SET,
-  type Summary, type Group, type AttentionItem,
+  StatCard, KPI, VISIT_COLOR, TGT_TRACK, CHART_LABEL, Panel, fmtCr, potCoverage, fmtDay, fmtDays, plural, NOT_SET,
+  HEALTH, HEALTH_ORDER,
+  type Summary, type Group, type AttentionItem, type Filters, type HealthLevel,
 } from "./shared";
 
 export const STALE_CHOICES = [14, 30, 60, 90];
 
-export default function PipelineTab({ data, staleDays, setStaleDays, regionLabel, onPickStage }: {
+export default function PipelineTab({ data, staleDays, setStaleDays, regionLabel, onPickStage, onFilter }: {
   data: Summary; staleDays: number; setStaleDays: (n: number) => void;
   regionLabel: (r: string | null) => string; onPickStage: (stage: number) => void;
+  onFilter: (patch: Partial<Filters>) => void;
 }) {
   const k = data.kpis;
   const dq = data.data_quality;
@@ -103,20 +107,26 @@ export default function PipelineTab({ data, staleDays, setStaleDays, regionLabel
           or later, including lost ones (they reached the stage where they were lost). The gap
           between two neighbouring grey bars is how many leads have stopped there.{" "}
           <b className="text-gray-700">Median time</b> is how long open leads have sat at the stage.
-          It is measured from the day a sync saw the lead move into it or, before that, from the
-          sheet&rsquo;s Stage Since date.{" "}
+          It is measured from the day a sync saw the lead move into it.{" "}
           {data.tracking_since
             ? <>Stage moves have been recorded since <b className="text-gray-700">{fmtDay(data.tracking_since)}</b>; a
-                lead already at its stage then, with no Stage Since date, has only a minimum
-                (&ldquo;≥&rdquo; below) and is left out of the median.</>
+                lead already at its stage then has only a minimum (&ldquo;≥&rdquo; below) and is left
+                out of the median.</>
             : <>No sync has recorded stage moves yet.</>}
           {data.no_stage_open > 0 && <> {plural(data.no_stage_open, "open lead has", "open leads have")} no stage and {data.no_stage_open === 1 ? "is" : "are"} not in the funnel.</>}
           {" "}Click a stage to see its leads.
         </Explain>
       </Panel>
 
+      {/* ── Health ──────────────────────────────────────────────────────── */}
+      <HealthByStage data={data} onFilter={onFilter} />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <StageAge data={data} />
+        <TargetTimeline data={data} />
+      </div>
+
       {/* ── Needs attention ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Panel title="Overdue Next Actions" sub="Open leads whose next action date has passed, most overdue first">
           <AttentionList items={data.attention.overdue_actions} total={k.overdue_actions}
             metric={(a) => a.next_action_date ? `due ${fmtDay(a.next_action_date)}` : "—"}
@@ -145,13 +155,31 @@ export default function PipelineTab({ data, staleDays, setStaleDays, regionLabel
             </p>
           )}
         </Panel>
+        <Panel title="Past Target Closure"
+          sub="Open leads whose Target Closure Date has passed, furthest past first">
+          <AttentionList items={data.attention.past_target} total={k.past_target}
+            metric={(a) => a.target_close_date ? `target ${fmtDay(a.target_close_date)}` : "—"}
+            detail={(a) => a.stage_name && `Stage ${a.stage_no} · ${a.stage_name}`}
+            emptyText={!dq.open
+              ? "No open leads in this selection."
+              : dq.missing_target_close === dq.open
+                ? "No open lead has a Target Closure Date yet, so there is nothing to check."
+                : "Every open lead with a target date is still within it."}
+            tone="text-amber-600" />
+          {dq.missing_target_close > 0 && dq.missing_target_close < dq.open && (
+            <p className="text-[10px] text-gray-500 mt-2">
+              {plural(dq.missing_target_close, "open lead has", "open leads have")} no Target Closure
+              Date and cannot be judged either way — they are not counted here.
+            </p>
+          )}
+        </Panel>
         <Panel title="Longest in Stage" sub="Open leads that have sat longest at their current stage">
           <AttentionList items={data.attention.longest_in_stage}
             total={data.attention.longest_in_stage.length}
             metric={(a) => fmtDays(a.days_in_stage, a.days_in_stage_basis)}
             detail={(a) => a.stage_name && `Stage ${a.stage_no} · ${a.stage_name}`}
             emptyText={dq.open
-              ? "No open lead's time in stage is known yet. It fills in from the next sync onward, or from Stage Since dates in the sheet."
+              ? "No open lead's time in stage is known yet. It fills in from the next sync onward."
               : "No open leads in this selection."}
             tone="text-gray-700" />
           {data.attention.longest_in_stage.some((a) => a.days_in_stage_basis === "floor") && (
@@ -164,7 +192,8 @@ export default function PipelineTab({ data, staleDays, setStaleDays, regionLabel
 
       {/* ── Splits ──────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Panel title="By Market" sub="UK, Europe and Australia — the region comes from each lead's country">
+        <Panel title="By Market"
+          sub="UK, Europe and Australia, from each lead's country — any other country is Other">
           <GroupBars rows={data.by_region} label={regionLabel} />
         </Panel>
         <Panel title="By Salesperson" sub="Whoever the sheet names as the lead's owner, joint owners as their own row">
@@ -253,11 +282,10 @@ function DataGaps({ dq }: { dq: Summary["data_quality"] }) {
     { label: "Salesperson", filled: dq.leads - dq.missing_owner, of: dq.leads, of_label: "leads" },
     { label: "Stage", filled: dq.leads - dq.missing_stage, of: dq.leads, of_label: "leads" },
     { label: "Market (from Country)", filled: dq.leads - dq.missing_region, of: dq.leads, of_label: "leads" },
-    { label: "Stage Since", filled: dq.open - dq.missing_stage_since, of: dq.open, of_label: "open leads" },
+    { label: "Target Closure Date", filled: dq.open - dq.missing_target_close, of: dq.open, of_label: "open leads" },
     { label: "Any logged activity", filled: dq.open - dq.missing_last_contact, of: dq.open, of_label: "open leads" },
     { label: "Est. Potential", filled: dq.open - dq.missing_potential, of: dq.open, of_label: "open leads" },
-    // Only meaningful once something has closed; hidden rather than "0 of 0".
-    ...(dq.closed ? [{ label: "Closed Date", filled: dq.closed - dq.missing_closed_date, of: dq.closed, of_label: "won / lost" }] : []),
+    // Only meaningful once something has been lost; hidden rather than "0 of 0".
     ...(dq.lost ? [{ label: "Lost Reason", filled: dq.lost - dq.missing_lost_reason, of: dq.lost, of_label: "lost leads" }] : []),
   ];
   return (
@@ -281,9 +309,148 @@ function DataGaps({ dq }: { dq: Summary["data_quality"] }) {
         These are gaps in the export team&rsquo;s sheet. <b className="text-gray-700">Any logged
         activity</b> counts open leads with at least one row on the Activity tab — that is where
         Last Contact comes from, so a lead with none cannot show up as gone quiet.{" "}
-        <b className="text-gray-700">Closed Date</b> is how a win or loss lands in the right month on
-        the Activity tab. Fix them in the sheet, then press Sync.
+        <b className="text-gray-700">Target Closure Date</b> is what Past Target Closure checks
+        against. Fix them in the sheet, then press Sync.
       </Explain>
+    </Panel>
+  );
+}
+
+/** Where in the funnel the trouble sits: one row per stage, its open leads
+ *  split by health. Clicking a coloured block lists exactly those leads. */
+function HealthByStage({ data, onFilter }: { data: Summary; onFilter: (p: Partial<Filters>) => void }) {
+  const rows = data.health.by_stage;
+  const max = Math.max(1, ...rows.map((r) => r.leads));
+  return (
+    <Panel title="Health by Stage"
+      sub="Open leads at each stage, coloured by how urgent they are — click a colour to list those leads">
+      <div className="flex flex-col gap-1.5 mt-2">
+        {rows.map((r) => (
+          <div key={String(r.key)} className="flex items-center gap-3">
+            <span className={`w-44 shrink-0 text-xs truncate ${r.key == null ? "italic text-gray-500" : "text-gray-600"}`}
+              title={r.label ?? ""}>{r.label}</span>
+            <span className="flex-1 flex h-4 rounded-md overflow-hidden bg-gray-50">
+              {r.leads > 0 && HEALTH_ORDER.map((lv) => r.counts[lv] ? (
+                <button key={lv} title={`${HEALTH[lv].label}: ${r.counts[lv]} — click to list`}
+                  onClick={() => onFilter({ health: lv, stage: r.key == null ? "" : String(r.key) })}
+                  className="h-full hover:opacity-80"
+                  style={{ width: `${(r.counts[lv] / max) * 100}%`, background: HEALTH[lv].swatch }} />
+              ) : null)}
+            </span>
+            <span className="w-28 shrink-0 text-right text-xs">
+              <b className="text-gray-800">{r.leads}</b>
+              {(r.counts.critical + r.counts.at_risk) > 0 && (
+                <span className="text-red-600 font-semibold"> · {r.counts.critical + r.counts.at_risk} red/amber</span>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+      <Legend />
+    </Panel>
+  );
+}
+
+function Legend() {
+  return (
+    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3">
+      {HEALTH_ORDER.map((lv) => (
+        <span key={lv} className="flex items-center gap-1.5 text-[10px] text-gray-600">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: HEALTH[lv].swatch }} />
+          {HEALTH[lv].label}
+        </span>
+      ))}
+      <span className="text-[10px] text-gray-500">· the rules are on the Highlights tab</span>
+    </div>
+  );
+}
+
+// Each age bucket wears the colour the stage clock gives a lead in it.
+const AGE_LEVEL: Record<string, HealthLevel> = {
+  "0–29 days": "on_track", "30–59 days": "watch", "60–89 days": "at_risk", "90+ days": "critical",
+};
+
+function StageAge({ data }: { data: Summary }) {
+  const rows = data.health.stage_age;
+  const unknown = rows.find((r) => r.key == null)?.leads ?? 0;
+  const known = rows.filter((r) => r.key != null) as { key: string; leads: number }[];
+  const max = Math.max(1, ...known.map((r) => r.leads));
+  return (
+    <Panel title="Time at Current Stage" sub="Open leads by how long they have sat without moving stage">
+      <div className="flex flex-col gap-2 mt-2">
+        {known.map((r) => (
+          <div key={r.key} className="flex items-center gap-3">
+            <span className="w-20 shrink-0 text-xs text-gray-600">{r.key}</span>
+            <span className="flex-1 h-4 rounded-md bg-gray-50 overflow-hidden">
+              <span className="block h-full rounded-md"
+                style={{ width: `${(r.leads / max) * 100}%`, background: HEALTH[AGE_LEVEL[r.key]].swatch }} />
+            </span>
+            <span className="w-10 shrink-0 text-right text-xs font-bold text-gray-800">{r.leads}</span>
+          </div>
+        ))}
+      </div>
+      <Explain>
+        Measured from the day a sync saw the lead arrive at its stage.{" "}
+        {unknown > 0 && <><b className="text-gray-700">{plural(unknown, "open lead")}</b> {unknown === 1 ? "is" : "are"} not
+          in a bucket yet: {unknown === 1 ? "it was" : "they were"} already at {unknown === 1 ? "its" : "their"} stage
+          when tracking began{data.tracking_since && <> ({fmtDay(data.tracking_since)})</>}, so only a minimum is
+          known. Each one moves into 90+ by itself if it still has not moved 90 days after that.</>}
+      </Explain>
+    </Panel>
+  );
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const WHEN_LEVEL: Record<"past" | "current" | "future", HealthLevel> = {
+  past: "critical", current: "watch", future: "on_track",
+};
+
+function TargetTimeline({ data }: { data: Summary }) {
+  const tl = data.health.target_timeline.map((m) => ({
+    ...m, name: `${MONTHS[m.month - 1]} ${String(m.year).slice(2)}`,
+  }));
+  const noTarget = data.health.no_target;
+  return (
+    <Panel title="Target Closure Timeline"
+      sub="Open leads by the month they are meant to close — red months have already gone by">
+      {!tl.length ? (
+        <p className="text-xs text-gray-500 py-6 text-center">
+          No open lead has a Target Closure Date yet. Fill the column on the Leads tab and this
+          becomes the closing calendar.
+        </p>
+      ) : (
+        <div className="h-56 mt-2">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={tl} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+              <CartesianGrid vertical={false} stroke="#f3f4f6" />
+              <XAxis dataKey="name" tick={{ fontSize: 10, fill: CHART_LABEL }} tickLine={false} axisLine={false} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: CHART_LABEL }} tickLine={false} axisLine={false} />
+              <Tooltip cursor={{ fill: "#fff7ed" }} content={({ active, payload }) => {
+                if (!active || !payload?.length) return null;
+                const m = payload[0].payload as (typeof tl)[number];
+                return (
+                  <div className="bg-gray-900 rounded-lg px-3 py-2 text-[11px] text-white shadow-lg">
+                    <p className="font-bold">{m.name}</p>
+                    <p className="text-white/70">{plural(m.leads, "lead")} due to close</p>
+                    <p className="text-white/70">
+                      {m.potential_cr != null
+                        ? `${fmtCr(m.potential_cr)} across ${m.potential_count} with an estimate`
+                        : "no estimates"}
+                    </p>
+                  </div>
+                );
+              }} />
+              <Bar dataKey="leads" radius={[4, 4, 0, 0]}>
+                {tl.map((m) => <Cell key={m.name} fill={HEALTH[WHEN_LEVEL[m.when]].swatch} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+      <p className="text-[10px] text-gray-500 mt-2">
+        {plural(noTarget, "open lead")} of {data.health.open} {noTarget === 1 ? "has" : "have"} no
+        Target Closure Date and {noTarget === 1 ? "is" : "are"} not on this chart. Yellow is this month.
+      </p>
     </Panel>
   );
 }

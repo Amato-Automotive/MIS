@@ -11,8 +11,9 @@ The quiet ways this goes wrong:
                    restart every time-in-stage from that day.
   NET CHANGE       A lead that goes 3→4 and 4→3 between syncs changed nothing;
                    a lead that goes 2→5 is ONE advance, not three.
-  CLOSES           A lead closed before tracking has no event; its Closed Date
-                   is the only record and must be what counts.
+  CLOSES           The sheet has no closed date, so a close is dated by the
+                   sync that saw the status change. A lead closed before
+                   tracking is undatable — never "today".
 """
 import os
 import sys
@@ -82,13 +83,12 @@ def test_a_baseline_at_a_different_stage_resets_to_a_floor():
 
 # ── closed_on ─────────────────────────────────────────────────────────────────
 
-def test_closed_date_beats_the_observed_status_change():
+def test_a_close_is_dated_by_the_observed_status_change():
     ev = [{"company_key": "A", "to_status": "Won", "observed_on": date(2026, 9, 25)}]
-    assert closed_on(L("A", 9, "Won", closed_date=date(2026, 9, 3)), ev) == date(2026, 9, 3)
-    assert closed_on(L("A", 9, "Won", closed_date=None), ev) == date(2026, 9, 25)
-    assert closed_on(L("A", 9, "Active", closed_date=date(2026, 9, 3)), ev) is None
-    # Closed before tracking, no date typed: unknown, not "today".
-    assert closed_on(L("B", 9, "Won", closed_date=None), ev) is None
+    assert closed_on(L("A", 9, "Won"), ev) == date(2026, 9, 25)
+    assert closed_on(L("A", 9, "Active"), ev) is None
+    # Closed before tracking: unknown, not "today".
+    assert closed_on(L("B", 9, "Won"), ev) is None
 
 
 # ── build_period ──────────────────────────────────────────────────────────────
@@ -132,14 +132,17 @@ def test_window_edges_are_inclusive_and_outside_is_ignored():
     assert p["movement"]["advanced"] == 2
 
 
-def test_closes_come_from_closed_date_even_without_an_event():
-    leads = [L("UKCC", 9, "Won", closed_date=date(2026, 9, 12), potential_cr=20.0),
-             L("Old", 9, "Won", closed_date=date(2026, 6, 1)),
-             L("Gone", 4, "Lost", closed_date=None, lost_reason="Price")]
-    events = [ev("Gone", "status", date(2026, 9, 20), fst="Active", tst="Lost")]
+def test_closes_come_from_status_events_in_the_window():
+    leads = [L("Halfords", 9, "Won", potential_cr=5.0),
+             L("UKCC", 9, "Won"),                                   # won before tracking
+             L("Old", 9, "Won"),
+             L("Gone", 4, "Lost", lost_reason="Price")]
+    events = [ev("Gone", "status", date(2026, 9, 20), fst="Active", tst="Lost"),
+              ev("Halfords", "status", date(2026, 9, 12), fst="Active", tst="Won"),
+              ev("Old", "status", date(2026, 6, 1), fst="Active", tst="Won")]
     p = period(events, [], leads)
     assert (p["movement"]["won"], p["movement"]["lost"]) == (1, 1)
-    assert [c["company"] for c in p["closes"]] == ["Gone", "UKCC"]   # newest first
+    assert [c["company"] for c in p["closes"]] == ["Gone", "Halfords"]   # newest first
 
 
 def test_activity_counts_and_coverage_of_open_leads():

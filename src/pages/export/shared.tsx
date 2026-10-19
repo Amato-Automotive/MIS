@@ -8,12 +8,14 @@ import { Search } from "lucide-react";
 import Select from "@/components/ui/Select";
 import {
   FilterBar, FilterActions, ClearFilters, FilterSpinner, RefreshButton, SyncButton, PdfButton,
-  FILTER_LABELS, filterOpts, toOpts,
+  FilterOverflow, FILTER_LABELS, filterOpts, toOpts,
 } from "@/components/ui/FilterBar";
 import { formatDate } from "@/lib/format";
 
+import { KPI, NEUTRAL_BAR, FUNNEL_MISSED } from "../oe-network/shared";
+
 export {
-  API_URL, StatCard, KPI, VISIT_COLOR, CALL_COLOR, NEUTRAL_BAR, TGT_TRACK,
+  API_URL, StatCard, KPI, VISIT_COLOR, CALL_COLOR, NEUTRAL_BAR, TGT_TRACK, CHART_LABEL,
   PeriodControls, usePeriod, periodParams,
 } from "../oe-network/shared";
 
@@ -30,10 +32,9 @@ export interface FunnelRow {
 /** How a time-in-stage was measured — see services/export_leads_sync.stage_entry.
  *  `floor` is a lower bound (tracking began after the lead reached the stage)
  *  and is always printed with "≥". */
-export type StageBasis = "observed" | "sheet" | "floor" | null;
+export type StageBasis = "observed" | "floor" | null;
 export const BASIS_NOTE: Record<Exclude<StageBasis, null>, string> = {
   observed: "Seen by the sync moving into this stage",
-  sheet: "From the sheet's Stage Since date",
   floor: "At this stage since tracking began at least — the real figure is longer",
 };
 export const fmtDays = (d: number | null, basis: StageBasis) =>
@@ -43,28 +44,123 @@ export interface AttentionItem {
   company: string; owner: string | null; region: string | null;
   stage_no: number | null; stage_name: string | null;
   days_in_stage: number | null; days_in_stage_basis: StageBasis; days_since_contact: number | null;
-  next_action: string | null; next_action_date: string | null;
+  next_action: string | null; next_action_date: string | null; target_close_date: string | null;
 }
+// ── Lead health (services/export_health.py) ──
+export type HealthLevel = "critical" | "at_risk" | "watch" | "on_track" | "parked" | "unknown";
+export type Clock = "stage" | "contact" | "next_action" | "target";
+export interface HealthReason {
+  clock: Clock; level: "critical" | "at_risk" | "watch" | "on_track"; days: number; text: string;
+}
+export interface LeadHealth { level: HealthLevel; reasons: HealthReason[] }
+export type LevelCounts = Record<HealthLevel, number>;
+export interface HealthItem {
+  company: string; owner: string | null; region: string | null; country: string | null;
+  stage_no: number | null; stage_name: string | null; potential_cr: number | null;
+  next_action: string | null; next_action_date: string | null; target_close_date: string | null;
+  health: LeadHealth;
+}
+export interface HealthSplit { key: string | number | null; label: string | null; leads: number; counts: LevelCounts }
+export interface HealthSummary {
+  levels: HealthLevel[];
+  thresholds: {
+    stage_days: [number, number, number]; contact_days: [number, number, number];
+    next_action_due_soon: number; next_action_overdue: [number, number];
+    target_due_soon: number; target_past: [number, number];
+  };
+  counts: LevelCounts; open: number;
+  lists: Record<"critical" | "at_risk" | "watch", {
+    items: HealthItem[]; total: number; potential_cr: number | null; potential_count: number;
+  }>;
+  by_stage: HealthSplit[]; by_owner: HealthSplit[]; by_region: HealthSplit[];
+  stage_age: { key: string | null; leads: number }[];
+  target_timeline: { year: number; month: number; leads: number; potential_cr: number | null;
+                     potential_count: number; when: "past" | "current" | "future" }[];
+  no_target: number;
+  gaps: { no_owner: number; no_activity: number; no_next_action: number; no_target: number;
+          no_potential: number; working: number };
+}
+
+/**
+ * The traffic light. One meaning per colour on this page: red is the same red
+ * as an overdue next action, amber the same as a lead gone quiet — they are
+ * the clocks that set it. Green here means "on pace"; the only other green on
+ * the page is Won, which is the same idea (good) and never sits in the same
+ * chart, because a closed lead has no health.
+ *
+ * Grey has two shades because "parked on purpose" and "we cannot tell" are
+ * different messages: the first is a decision, the second is a gap in the sheet.
+ */
+// `ink` is the figure printed ON the swatch: white only where it reads.
+export const HEALTH: Record<HealthLevel, { label: string; swatch: string; ink: string; text: string; chip: string }> = {
+  critical: { label: "Act now",        swatch: KPI.danger.color,     ink: "#ffffff", text: "text-red-600",
+              chip: "bg-red-50 text-red-700 border-red-100" },
+  at_risk:  { label: "At risk",        swatch: KPI.warning.color,    ink: "#ffffff", text: "text-amber-600",
+              chip: "bg-amber-50 text-amber-700 border-amber-100" },
+  watch:    { label: "Watch",          swatch: KPI.caution.color,    ink: "#1f2937", text: "text-yellow-700",
+              chip: "bg-yellow-50 text-yellow-800 border-yellow-200" },
+  on_track: { label: "On track",       swatch: KPI.conversion.color, ink: "#ffffff", text: "text-green-700",
+              chip: "bg-green-50 text-green-700 border-green-100" },
+  parked:   { label: "On hold",        swatch: FUNNEL_MISSED,        ink: "#1f2937", text: "text-gray-600",
+              chip: "bg-gray-100 text-gray-600 border-gray-200" },
+  unknown:  { label: "Can't tell yet", swatch: NEUTRAL_BAR,          ink: "#1f2937", text: "text-gray-500",
+              chip: "bg-white text-gray-500 border-gray-300 border-dashed" },
+};
+export const HEALTH_ORDER: HealthLevel[] = ["critical", "at_risk", "watch", "on_track", "parked", "unknown"];
+
+export function HealthPill({ level, className = "" }: { level: HealthLevel; className?: string }) {
+  const h = HEALTH[level];
+  return (
+    <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full border whitespace-nowrap ${h.chip} ${className}`}>
+      <span className="w-1.5 h-1.5 rounded-full" style={{ background: h.swatch }} />
+      {h.label}
+    </span>
+  );
+}
+
+/** One stacked bar of open leads by level — the shape every health split uses. */
+export function HealthBar({ counts, total, height = "h-3.5" }: { counts: LevelCounts; total: number; height?: string }) {
+  if (!total) return <span className={`block ${height} rounded-md bg-gray-50`} />;
+  return (
+    <span className={`flex ${height} rounded-md overflow-hidden bg-gray-50`}>
+      {HEALTH_ORDER.map((lv) => counts[lv] ? (
+        <span key={lv} title={`${HEALTH[lv].label}: ${counts[lv]}`}
+          style={{ width: `${(counts[lv] / total) * 100}%`, background: HEALTH[lv].swatch }} />
+      ) : null)}
+    </span>
+  );
+}
+
 export interface SyncMeta { registered: boolean; last_synced_at: string | null; last_sync_status: string | null }
 export interface Summary {
   as_of: string; stale_days: number;
   kpis: {
     leads: number; open: number; active: number; on_hold: number; won: number; lost: number;
     no_status: number; pipeline: Pot; won_potential: Pot; stale: number; overdue_actions: number;
+    past_target: number;
   };
   funnel: FunnelRow[];
   no_stage_open: number;
   by_region: Group[]; by_owner: Group[]; by_customer_type: Group[]; by_source: Group[];
-  attention: { overdue_actions: AttentionItem[]; stale: AttentionItem[]; longest_in_stage: AttentionItem[] };
+  attention: {
+    overdue_actions: AttentionItem[]; stale: AttentionItem[]; past_target: AttentionItem[];
+    longest_in_stage: AttentionItem[];
+  };
   lost_reasons: { key: string | null; leads: number }[];
   data_quality: {
     leads: number; open: number; closed: number; lost: number;
     missing_owner: number; missing_stage: number;
-    missing_stage_since: number; missing_last_contact: number; missing_potential: number;
-    missing_region: number; missing_closed_date: number; missing_lost_reason: number;
+    missing_target_close: number; missing_last_contact: number; missing_potential: number;
+    missing_region: number; missing_lost_reason: number;
   };
   tracking_since: string | null;
   region_labels: Record<string, string>;
+  health: HealthSummary;
+  recent: {
+    days: number; from: string;
+    movement: ActivityResponse["movement"]; touches: number; companies: number;
+    feed: FeedItem[]; feed_total: number;
+  };
   sync: SyncMeta;
 }
 
@@ -105,14 +201,19 @@ export interface Lead {
   sheet_row: number; company: string; owner: string | null; customer_type: string | null;
   country: string | null; region: string | null; city: string | null;
   contact_person: string | null; contact_email: string | null; contact_phone: string | null;
-  stage_no: number | null; stage_name: string | null; stage_since: string | null;
-  status: string | null; closed_date: string | null; lost_reason: string | null;
+  stage_no: number | null; stage_name: string | null;
+  status: string | null; target_close_date: string | null; lost_reason: string | null;
+  /** Derived, not typed: the day a sync saw it become Won/Lost. Null if it
+   *  closed before tracking began. */
+  closed_on: string | null;
   potential_cr: number | null; last_contact: string | null;
   next_action: string | null; next_action_date: string | null; source: string | null;
   remarks: string | null;
   is_open: boolean; days_in_stage: number | null; days_in_stage_basis: StageBasis;
   days_since_contact: number | null;
-  stale: boolean | null; next_action_overdue: boolean | null;
+  stale: boolean | null; next_action_overdue: boolean | null; past_target: boolean | null;
+  /** Null for a closed lead. */
+  health: LeadHealth | null;
   recent_activity: RecentActivity[];
 }
 export interface FilterOptions {
@@ -120,6 +221,7 @@ export interface FilterOptions {
   regions: { value: string; label: string }[];
   stages: { value: number; label: string }[];
   statuses: string[];
+  health: { value: HealthLevel; label: string }[];
 }
 
 // ── Formatting ────────────────────────────────────────────────────────────────
@@ -158,10 +260,10 @@ export const STATUS_STYLE: Record<string, string> = {
 
 export interface Filters {
   owner: string; region: string; country: string; customerType: string;
-  stage: string; status: string; q: string;
+  stage: string; status: string; health: string; source: string; q: string;
 }
 export const NO_FILTERS: Filters = {
-  owner: "", region: "", country: "", customerType: "", stage: "", status: "", q: "",
+  owner: "", region: "", country: "", customerType: "", stage: "", status: "", health: "", source: "", q: "",
 };
 
 export function filterParams(f: Filters, staleDays: number) {
@@ -172,6 +274,8 @@ export function filterParams(f: Filters, staleDays: number) {
   if (f.customerType) p.set("customer_type", f.customerType);
   if (f.stage) p.set("stage", f.stage);
   if (f.status) p.set("status", f.status);
+  if (f.health) p.set("health", f.health);
+  if (f.source) p.set("source", f.source);
   if (f.q.trim()) p.set("q", f.q.trim());
   p.set("stale_days", String(staleDays));
   return p;
@@ -187,6 +291,7 @@ export function describeFilters(f: Filters, opts: FilterOptions | null) {
   return [
     f.owner && f.owner, f.region && region, f.country && f.country,
     f.customerType && f.customerType, stage && `Stage ${stage}`, f.status && f.status,
+    f.health && HEALTH[f.health as HealthLevel]?.label, f.source && f.source,
     f.q.trim() && `"${f.q.trim()}"`,
   ].filter(Boolean) as string[];
 }
@@ -203,8 +308,10 @@ const inputClass =
  * control there would only filter by some date column and imply a history
  * those views do not have.
  *
- * Source is deliberately not a filter: it would be the eighth, past the point
- * where a bar stops being scannable, and the pipeline tab already splits by it.
+ * Nine filters is past the point where a bar stays scannable, so the three
+ * used least — Country (Market covers most questions), Customer type and
+ * Source — sit in the "More filters" popover, whose button says how many of
+ * them are on. Health is in the bar: it is the one management reaches for.
  */
 export function ExportFilterBar({
   filters, setFilters, options, loading, syncing, onRefresh, onSync, sync, period,
@@ -235,12 +342,6 @@ export function ExportFilterBar({
       <Select value={filters.region} onChange={set("region")}
         options={[{ value: "", label: FILTER_LABELS.region.all }, ...(options?.regions ?? [])]}
         placeholder={FILTER_LABELS.region.placeholder} />
-      <Select value={filters.country} onChange={set("country")}
-        options={filterOpts(options?.countries, "country")}
-        placeholder={FILTER_LABELS.country.placeholder} />
-      <Select value={filters.customerType} onChange={set("customerType")}
-        options={filterOpts(options?.customer_types, "customerType")}
-        placeholder={FILTER_LABELS.customerType.placeholder} />
       <Select value={filters.stage} onChange={set("stage")}
         options={[{ value: "", label: FILTER_LABELS.stage.all },
                   ...(options?.stages ?? []).map((s) => ({ value: String(s.value), label: s.label }))]}
@@ -248,6 +349,20 @@ export function ExportFilterBar({
       <Select value={filters.status} onChange={set("status")}
         options={toOpts(options?.statuses, FILTER_LABELS.status.all)}
         placeholder={FILTER_LABELS.status.placeholder} />
+      <Select value={filters.health} onChange={set("health")}
+        options={[{ value: "", label: FILTER_LABELS.health.all }, ...(options?.health ?? [])]}
+        placeholder={FILTER_LABELS.health.placeholder} />
+      <FilterOverflow active={[filters.country, filters.customerType, filters.source].filter(Boolean).length}>
+        <Select value={filters.country} onChange={set("country")} className="w-full"
+          options={filterOpts(options?.countries, "country")}
+          placeholder={FILTER_LABELS.country.placeholder} />
+        <Select value={filters.customerType} onChange={set("customerType")} className="w-full"
+          options={filterOpts(options?.customer_types, "customerType")}
+          placeholder={FILTER_LABELS.customerType.placeholder} />
+        <Select value={filters.source} onChange={set("source")} className="w-full"
+          options={filterOpts(options?.sources, "source")}
+          placeholder={FILTER_LABELS.source.placeholder} />
+      </FilterOverflow>
       <div className="relative">
         <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search company, contact…"

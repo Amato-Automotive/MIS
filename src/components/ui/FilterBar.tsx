@@ -1,4 +1,5 @@
-import { RefreshCw, Printer, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { RefreshCw, Printer, X, SlidersHorizontal } from "lucide-react";
 
 /**
  * THE filter bar for every module. See CLAUDE.md § "Filters and selectors" for
@@ -40,6 +41,50 @@ export function ClearFilters({ onClear, show = true }: { onClear: () => void; sh
       className="flex items-center gap-1 text-[11px] font-semibold text-gray-500 hover:text-red-500">
       <X size={12} /> Clear
     </button>
+  );
+}
+
+/**
+ * The overflow for a bar that genuinely needs more than ~7 filters (CLAUDE.md
+ * § Behaviour). It is a popover launched from the bar, never a collapsed panel,
+ * and the button says how many of the filters inside are set — so a filter the
+ * user cannot see is still one they cannot forget is on.
+ */
+export function FilterOverflow({ active, children }: { active: number; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Element | null;
+      // A <Select> inside renders its list in a portal outside this element;
+      // picking from it must not count as clicking away.
+      if (ref.current?.contains(t) || t?.closest?.("[data-radix-popper-content-wrapper]")) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  return (
+    <div ref={ref} className="relative">
+      <button onClick={() => setOpen((o) => !o)} aria-expanded={open}
+        className={`flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-xl border transition ${
+          active ? "border-brand-orange text-brand-orange bg-orange-50"
+                 : "border-gray-200 text-gray-600 bg-white hover:border-orange-300"}`}>
+        <SlidersHorizontal size={13} />
+        More filters{active ? ` · ${active} on` : ""}
+      </button>
+      {open && (
+        <div className="absolute z-40 left-0 mt-2 w-64 bg-white border border-orange-100 rounded-2xl shadow-lg p-3 flex flex-col gap-2">
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -112,6 +157,8 @@ export const FILTER_LABELS = {
   customerType:{ placeholder: "Customer type", all: "All customer types" },
   stage:       { placeholder: "Stage",       all: "All stages" },
   status:      { placeholder: "Status",      all: "All statuses" },
+  health:      { placeholder: "Health",      all: "All health levels" },
+  source:      { placeholder: "Source",      all: "All sources" },
 } as const;
 
 /** The `<Select>` options for a filter: the "all" row first, then the values. */

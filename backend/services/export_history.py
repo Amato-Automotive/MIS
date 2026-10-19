@@ -84,13 +84,12 @@ def stage_entries(events: list) -> dict:
 
 
 def closed_on(lead: dict, status_events: list) -> Optional[date]:
-    """The day a Won/Lost lead closed: the team's Closed Date, else the day the
-    sync saw its status change to what it is now. None for open leads, and for
-    closes that happened before tracking with no date typed."""
+    """The day a Won/Lost lead closed: the day the sync saw its status change
+    to what it is now. None for open leads, and for leads that were already
+    closed when tracking began — the sheet has no closed-date column (management
+    settled the layout on a Target Closure Date instead), so those are undatable."""
     if lead.get("status") not in CLOSED:
         return None
-    if lead.get("closed_date"):
-        return lead["closed_date"]
     seen = [e["observed_on"] for e in status_events
             if e["company_key"] == company_key(lead["company"]) and e["to_status"] == lead["status"]]
     return max(seen) if seen else None

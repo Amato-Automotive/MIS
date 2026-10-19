@@ -4,10 +4,17 @@
 import { Fragment, useMemo, useState } from "react";
 import { ChevronRight, ArrowUpDown } from "lucide-react";
 import {
-  Panel, fmtCr, fmtDay, fmtDays, BASIS_NOTE, NOT_SET, STATUS_STYLE, type Lead,
+  Panel, fmtCr, fmtDay, fmtDays, BASIS_NOTE, NOT_SET, STATUS_STYLE, HEALTH, HEALTH_ORDER, HealthPill,
+  type Lead, type Clock,
 } from "./shared";
 
-type SortKey = "sheet" | "company" | "owner" | "stage" | "potential" | "in_stage" | "contact" | "next";
+type SortKey = "sheet" | "health" | "company" | "owner" | "stage" | "potential" | "in_stage" | "contact" | "next";
+
+/** The colour a single clock gave this lead, for tinting that clock's cell. */
+const clockText = (l: Lead, clock: Clock) => {
+  const r = l.health?.reasons.find((x) => x.clock === clock);
+  return r && r.level !== "on_track" ? `font-semibold ${HEALTH[r.level].text}` : "text-gray-600";
+};
 
 /** Nulls always sort last, whichever way the column runs — a blank is not the
  *  smallest or the largest value, it is no value. */
@@ -20,6 +27,8 @@ function compare(a: number | string | null, b: number | string | null, dir: 1 | 
 
 const SORT_VALUE: Record<SortKey, (l: Lead) => number | string | null> = {
   sheet: (l) => l.sheet_row,
+  // Worst first; closed leads (no health) last.
+  health: (l) => (l.health ? HEALTH_ORDER.indexOf(l.health.level) : null),
   company: (l) => l.company.toUpperCase(),
   owner: (l) => l.owner?.toUpperCase() ?? null,
   stage: (l) => l.stage_no,
@@ -44,6 +53,7 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
     <th className={`py-2 pr-3 ${className}`}>
       <button onClick={() => {
         // Figures open largest-first; names and the sheet's own order open A→Z.
+        // Health opens worst-first, which is its natural (ascending) order.
         const numeric = ["potential", "in_stage", "contact", "stage"].includes(key);
         if (sort === key) setDir((d) => (d === 1 ? -1 : 1));
         else { setSort(key); setDir(numeric ? -1 : 1); }
@@ -69,6 +79,7 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
             <thead>
               <tr className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 border-b border-gray-100">
                 <th className="w-5" />
+                {header("health", "Health")}
                 {header("company", "Company")}
                 {header("owner", "Salesperson")}
                 <th className="py-2 pr-3">Market</th>
@@ -87,8 +98,13 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
                   <Fragment key={l.company}>
                     <tr onClick={() => setOpen(expanded ? null : l.company)}
                       className="border-b border-gray-50 hover:bg-orange-50/40 cursor-pointer align-top">
-                      <td className="py-2 pl-1">
-                        <ChevronRight size={12} className={`text-gray-400 mt-0.5 transition-transform ${expanded ? "rotate-90" : ""}`} />
+                      <td className="py-2 pl-1"
+                        style={{ boxShadow: l.health ? `inset 3px 0 0 ${HEALTH[l.health.level].swatch}` : undefined }}>
+                        <ChevronRight size={12} className={`text-gray-400 mt-0.5 ml-1 transition-transform ${expanded ? "rotate-90" : ""}`} />
+                      </td>
+                      <td className="py-2 pr-3">
+                        {l.health ? <HealthPill level={l.health.level} />
+                          : <span className="text-[10px] text-gray-500" title="Won and Lost leads are finished and not judged">closed</span>}
                       </td>
                       <td className="py-2 pr-3 min-w-[160px]">
                         <p className="font-semibold text-gray-700">{l.company}</p>
@@ -114,11 +130,17 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
                         {l.status
                           ? <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${STATUS_STYLE[l.status] ?? ""}`}>{l.status}</span>
                           : <span className="text-gray-400">—</span>}
+                        {l.is_open && l.target_close_date && (
+                          <p className={`text-[10px] mt-1 whitespace-nowrap ${clockText(l, "target")}`}
+                            title="Target Closure Date">
+                            target {fmtDay(l.target_close_date)}
+                          </p>
+                        )}
                       </td>
                       <td className="py-2 pr-3 text-right text-gray-700 whitespace-nowrap">
                         {l.potential_cr != null ? fmtCr(l.potential_cr) : <span className="text-gray-400">—</span>}
                       </td>
-                      <td className="py-2 pr-3 text-right text-gray-600 whitespace-nowrap"
+                      <td className={`py-2 pr-3 text-right whitespace-nowrap ${clockText(l, "stage")}`}
                         title={l.days_in_stage_basis ? BASIS_NOTE[l.days_in_stage_basis] : "Not known yet"}>
                         {l.days_in_stage != null
                           ? fmtDays(l.days_in_stage, l.days_in_stage_basis)
@@ -127,7 +149,7 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
                       <td className="py-2 pr-3 text-right whitespace-nowrap"
                         title={l.last_contact ? `${fmtDay(l.last_contact)} — newest Activity entry` : "Nothing on the Activity tab"}>
                         {l.days_since_contact != null
-                          ? <span className={l.stale ? "font-semibold text-amber-600" : "text-gray-600"}>
+                          ? <span className={clockText(l, "contact")}>
                               {l.days_since_contact}d ago
                             </span>
                           : <span className="text-gray-400">—</span>}
@@ -137,7 +159,7 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
                           <>
                             <p className="text-gray-600">{l.next_action ?? "—"}</p>
                             {l.next_action_date && (
-                              <p className={`text-[10px] ${l.next_action_overdue ? "font-semibold text-red-600" : "text-gray-500"}`}>
+                              <p className={`text-[10px] ${l.is_open ? clockText(l, "next_action") : "text-gray-500"}`}>
                                 {l.next_action_overdue ? "overdue · " : "by "}{fmtDay(l.next_action_date)}
                               </p>
                             )}
@@ -148,7 +170,28 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
                     {expanded && (
                       <tr className="bg-gray-50/60 border-b border-gray-100">
                         <td />
-                        <td colSpan={9} className="py-3 pr-3">
+                        <td colSpan={10} className="py-3 pr-3">
+                          {l.health && (
+                            <div className="flex flex-wrap items-center gap-1.5 mb-3 text-[11px]">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mr-1">Why this colour</span>
+                              {l.health.reasons.length ? l.health.reasons.map((r) => (
+                                <span key={r.clock} className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md border ${HEALTH[r.level].chip}`}>
+                                  {r.text}
+                                </span>
+                              )) : (
+                                <span className="text-gray-500">
+                                  {l.health.level === "parked"
+                                    ? "Status is On Hold, so it is not judged."
+                                    : "Nothing to measure yet — no activity logged, no next action or target date, and no stage move seen."}
+                                </span>
+                              )}
+                              {l.health.level === "unknown" && l.health.reasons.length > 0 && (
+                                <span className="text-gray-500">
+                                  · nothing is overdue, but no contact is logged, so it cannot be called on track
+                                </span>
+                              )}
+                            </div>
+                          )}
                           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-[11px]">
                             <div>
                               <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Contact</p>
@@ -158,10 +201,16 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
                             </div>
                             <div>
                               <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Dates</p>
-                              <p className="text-gray-600">Stage since: <b className="text-gray-700">{fmtDay(l.stage_since)}</b></p>
                               <p className="text-gray-600">Last contact: <b className="text-gray-700">{fmtDay(l.last_contact)}</b></p>
+                              <p className="text-gray-600">
+                                Target closure: <b className={l.past_target ? "text-amber-600" : "text-gray-700"}>{fmtDay(l.target_close_date)}</b>
+                                {l.past_target && <span className="text-amber-600"> · passed</span>}
+                              </p>
                               {!l.is_open && (
-                                <p className="text-gray-600">{l.status}: <b className="text-gray-700">{fmtDay(l.closed_date)}</b></p>
+                                <p className="text-gray-600"
+                                  title={l.closed_on ? "The day a sync saw the status change" : "Closed before tracking began, so the day is not known"}>
+                                  {l.status}: <b className="text-gray-700">{fmtDay(l.closed_on)}</b>
+                                </p>
                               )}
                               {l.status === "Lost" && (
                                 <p className="text-gray-600">Reason: <b className="text-gray-700">{l.lost_reason ?? "—"}</b></p>
@@ -195,12 +244,14 @@ export default function LeadsTab({ leads, staleDays, regionLabel }: {
         </div>
       )}
       <p className="text-[10px] text-gray-500 mt-3">
+        <b className="text-gray-600">Health</b> is the worst of four clocks — time at stage, time since
+        contact, next action date and target closure — and each of those cells is tinted with the colour
+        its own clock gave; the rules are on the Highlights tab. Sort by Health to see the worst first.{" "}
         <b className="text-gray-600">In stage</b> counts days from when a sync saw the lead move into
-        its stage, or else the sheet&rsquo;s Stage Since date; &ldquo;≥&rdquo; means it was already
-        there when tracking began, so the real figure is longer.{" "}
-        <b className="text-gray-600">Last contact</b> is the newest entry on the Activity tab and turns
-        amber after {staleDays} days (the threshold is set on the Pipeline tab). A dash means the sheet leaves that cell blank — it is not a zero.
-        Overdue next actions are only flagged for open leads.
+        its stage; &ldquo;≥&rdquo; means it was already there when tracking began, so the real figure
+        is longer. <b className="text-gray-600">Last contact</b> is the newest entry on the Activity tab
+        (the Pipeline tab&rsquo;s &ldquo;gone quiet&rdquo; list uses its own {staleDays}-day setting).
+        A dash means the sheet leaves that cell blank — it is not a zero.
       </p>
     </Panel>
   );

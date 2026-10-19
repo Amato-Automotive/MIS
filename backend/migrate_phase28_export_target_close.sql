@@ -1,0 +1,14 @@
+-- Phase 28 — Export: the Leads tab's layout as management confirmed it.
+--
+-- Management settled column K as "Target Closure Date" (when a lead is expected
+-- to close) and dropped Stage Since. So the sync now reads target_close_date
+-- and no longer writes stage_since or closed_date.
+--
+-- Additive only (expand). stage_since and closed_date are left in place and
+-- will simply be NULL after the next sync; drop them in a later contract step
+-- once this code is the only version running:
+--   ALTER TABLE export_leads DROP COLUMN stage_since, DROP COLUMN closed_date;
+--
+-- region now also takes 'OTH' (a country outside UK / EU / AU); VARCHAR(4)
+-- already fits it.
+ALTER TABLE export_leads ADD COLUMN IF NOT EXISTS target_close_date DATE;

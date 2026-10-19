@@ -4,7 +4,7 @@ AutoForm MIS — Export lead pipeline: sheet parser and the pipeline maths.
 Source is the export team's workbook — a format we designed for them, with
 dropdowns fed from a `Lists` tab. Two tabs are read:
 
-  • Leads     one row per company: where it stands, who owns it, how it closed
+  • Leads     one row per company: where it stands, who owns it, when it should close
   • Activity  one row per contact with a customer (date, company, type, by whom)
 
 The older tabs in that workbook meant things by cell colour with no consistent
@@ -36,6 +36,7 @@ from datetime import date
 from statistics import median
 from typing import Optional
 
+from services.export_health import health
 from services.oe_network_sync import _clean, _cut, _fetch_all_grids, _to_number, parse_date_cell
 
 # Stage NUMBER is the identity; these labels are only for display. Kept here
@@ -57,14 +58,15 @@ LOST_REASONS = ("Price", "Quality", "Lead Time / Capacity", "MOQ", "No Response"
 ACTIVITY_TYPES = ("Email", "Call", "Video Call", "Meeting", "Visit", "Sample Sent",
                   "Quote Sent", "Trade Fair", "Other")
 
-REGIONS = ("UK", "EU", "AU")
-REGION_LABELS = {"UK": "United Kingdom", "EU": "Europe", "AU": "Australia"}
+REGIONS = ("UK", "EU", "AU", "OTH")
+REGION_LABELS = {"UK": "United Kingdom", "EU": "Europe", "AU": "Australia", "OTH": "Other"}
 
 # The workbook is "Exports UK, EU, AU", and the team plans by those three
 # markets rather than by country. EU here means the European market, not EU
 # membership: Switzerland and Norway sell through the same channel. Ireland
 # is EU — it is its own market from the UK even though the team often works
-# the two together.
+# the two together. Anything else (a Frankfurt contact from Algeria or China)
+# is OTH: a real lead, just outside the three markets the team plans by.
 _UK = {"UK", "UNITED KINGDOM", "GREAT BRITAIN", "ENGLAND", "SCOTLAND", "WALES", "NORTHERN IRELAND"}
 _AU = {"AUSTRALIA"}
 _EU = {
@@ -72,7 +74,7 @@ _EU = {
     "LUXEMBOURG", "AUSTRIA", "SWITZERLAND", "POLAND", "CZECH REPUBLIC", "CZECHIA", "SLOVAKIA",
     "HUNGARY", "SLOVENIA", "CROATIA", "ROMANIA", "BULGARIA", "GREECE", "CYPRUS", "MALTA",
     "DENMARK", "SWEDEN", "NORWAY", "FINLAND", "ICELAND", "ESTONIA", "LATVIA", "LITHUANIA",
-    "SERBIA",
+    "SERBIA", "ALBANIA",
 }
 
 # normalised header -> record field. Headers are compared with everything but
@@ -88,9 +90,8 @@ COLUMNS = {
     "CONTACTEMAIL": "contact_email",
     "CONTACTPHONE": "contact_phone",
     "STAGE": "stage",
-    "STAGESINCE": "stage_since",
     "STATUS": "status",
-    "CLOSEDDATE": "closed_date",
+    "TARGETCLOSUREDATE": "target_close_date",
     "LOSTREASON": "lost_reason",
     "ESTPOTENTIALCR": "potential_cr",
     "NEXTACTION": "next_action",
@@ -110,7 +111,7 @@ ACTIVITY_COLUMNS = {
 ACTIVITY_REQUIRED = {"DATE", "COMPANY", "TYPE"}
 
 # Fields the generic text loop must leave alone — each is parsed on its own.
-_TYPED_FIELDS = {"company", "stage", "status", "potential_cr", "stage_since", "closed_date",
+_TYPED_FIELDS = {"company", "stage", "status", "potential_cr", "target_close_date",
                  "lost_reason", "next_action_date"}
 
 _STAGE_RE = re.compile(r"^\s*(?:STAGE\s*)?(\d{1,2})\b", re.IGNORECASE)
@@ -129,7 +130,8 @@ def company_key(name: str) -> str:
 
 
 def region_for(country: Optional[str]) -> Optional[str]:
-    """'UK' | 'EU' | 'AU' for a country as the dropdown spells it, else None.
+    """'UK' | 'EU' | 'AU' | 'OTH' for a country as the dropdown spells it;
+    None only when no country is given.
 
     "Europe (pan-EU)" — a lead with no single country, such as an OEM's
     European office — is EU by definition.
@@ -143,7 +145,7 @@ def region_for(country: Optional[str]) -> Optional[str]:
         return "AU"
     if key in _EU or key.startswith("EUROPE"):
         return "EU"
-    return None
+    return "OTH"
 
 
 def parse_stage(v) -> Optional[int]:
@@ -303,12 +305,11 @@ def parse_leads_grids(grids: dict, today: Optional[date] = None):
             pot = None
         rec["potential_cr"] = pot
 
-        rec["stage_since"] = _date_field(cell(line, "STAGESINCE"), where, "stage since", errors, today)
         rec["next_action_date"] = _date_field(cell(line, "NEXTACTIONDATE"), where, "next action date", errors)
-        rec["closed_date"] = _date_field(cell(line, "CLOSEDDATE"), where, "closed date", errors, today)
-        if rec["closed_date"] and rec["status"] not in CLOSED:
-            errors.append(f"{where}: has a Closed Date but its status is "
-                          f"{rec['status'] or 'blank'}, not Won or Lost — check which is right.")
+        # A plan, not a record: it may lie in the past (that is what "past
+        # target" means) and is kept on a closed lead as the date it was aimed at.
+        rec["target_close_date"] = _date_field(cell(line, "TARGETCLOSUREDATE"), where,
+                                               "target closure date", errors)
 
         raw_reason = cell(line, "LOSTREASON")
         rec["lost_reason"] = _pick(raw_reason, LOST_REASONS)
@@ -322,10 +323,6 @@ def parse_leads_grids(grids: dict, today: Optional[date] = None):
         rec["last_contact"] = None
 
         rec["region"] = region_for(rec["country"])
-        if rec["country"] and rec["region"] is None:
-            errors.append(f"{where}: country {rec['country']!r} is not mapped to "
-                          f"UK / EU / AU, so it is left out of the region split — add it to "
-                          f"services/export_leads_sync.py.")
         records.append(rec)
 
     if not records:
@@ -417,7 +414,6 @@ def stage_entry(row: dict):
     """(date, basis) the lead entered its current stage, best evidence first.
 
       observed  the sync saw it arrive at this stage — dated to that sync
-      sheet     the team's own Stage Since date
       floor     it has been at this stage at least since tracking began; the
                 real figure is longer, and the UI prints it as "≥"
 
@@ -427,8 +423,6 @@ def stage_entry(row: dict):
     kind, on = row.get("stage_entered_kind"), row.get("stage_entered_on")
     if on is not None and kind in ("stage", "added"):
         return on, "observed"
-    if row.get("stage_since") is not None:
-        return row["stage_since"], "sheet"
     if on is not None and kind == "baseline":
         return on, "floor"
     return None, None
@@ -444,8 +438,9 @@ def enrich(row: dict, today: date, stale_days: int) -> dict:
     open_ = is_open(row.get("status"))
     since_contact = _days(row.get("last_contact"), today)
     nad = row.get("next_action_date")
+    target = row.get("target_close_date")
     entered, basis = stage_entry(row)
-    return {
+    out = {
         **row,
         "stage_name": STAGES.get(row.get("stage_no")),
         "is_open": open_,
@@ -454,7 +449,10 @@ def enrich(row: dict, today: date, stale_days: int) -> dict:
         "days_since_contact": since_contact,
         "stale": (None if since_contact is None or not open_ else since_contact > stale_days),
         "next_action_overdue": (None if nad is None or not open_ else nad < today),
+        "past_target": (None if target is None or not open_ else target < today),
     }
+    out["health"] = health(out, today)
+    return out
 
 
 def _pot_sum(rows: list) -> dict:
@@ -524,12 +522,15 @@ def build_summary(rows: list, today: date, stale_days: int, attention_limit: int
         picked.sort(key=key, reverse=True)
         return [{f: r.get(f) for f in ("company", "owner", "region", "stage_no", "stage_name",
                                         "days_in_stage", "days_in_stage_basis",
-                                        "days_since_contact", "next_action", "next_action_date")}
+                                        "days_since_contact", "next_action", "next_action_date",
+                                        "target_close_date")}
                 for r in picked[:attention_limit]], len(picked)
 
     overdue, n_overdue = top(lambda r: r["next_action_overdue"],
                              lambda r: (today - r["next_action_date"]).days)
     stale, n_stale = top(lambda r: r["stale"], lambda r: r["days_since_contact"])
+    past_target, n_past_target = top(lambda r: r["past_target"],
+                                     lambda r: (today - r["target_close_date"]).days)
     longest, _ = top(lambda r: r["days_in_stage"] is not None, lambda r: r["days_in_stage"])
 
     reasons = [{"key": k, "leads": sum(1 for r in lost if r.get("lost_reason") == k)}
@@ -554,6 +555,7 @@ def build_summary(rows: list, today: date, stale_days: int, attention_limit: int
             "won_potential": _pot_sum(won),
             "stale": n_stale,
             "overdue_actions": n_overdue,
+            "past_target": n_past_target,
         },
         "funnel": funnel,
         "no_stage_open": sum(1 for r in opn if r.get("stage_no") is None),
@@ -565,6 +567,7 @@ def build_summary(rows: list, today: date, stale_days: int, attention_limit: int
         "attention": {
             "overdue_actions": overdue,
             "stale": stale,
+            "past_target": past_target,
             "longest_in_stage": longest,
         },
         # What the team has not filled in, so every figure above can say how
@@ -573,11 +576,10 @@ def build_summary(rows: list, today: date, stale_days: int, attention_limit: int
             "leads": len(rows),
             "missing_owner": sum(not r.get("owner") for r in rows),
             "missing_stage": sum(r.get("stage_no") is None for r in rows),
-            "missing_stage_since": sum(r.get("stage_since") is None for r in opn),
+            "missing_target_close": sum(r.get("target_close_date") is None for r in opn),
             "missing_last_contact": sum(r.get("last_contact") is None for r in opn),
             "missing_potential": sum(r.get("potential_cr") is None for r in opn),
             "missing_region": sum(r.get("region") is None for r in rows),
-            "missing_closed_date": sum(r.get("closed_date") is None for r in closed),
             "missing_lost_reason": no_reason,
             "open": len(opn),
             "closed": len(closed),

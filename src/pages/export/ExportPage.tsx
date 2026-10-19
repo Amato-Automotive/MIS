@@ -1,4 +1,4 @@
-// Export — the UK / EU / AU lead pipeline, read from the export team's
+// Export — the export lead pipeline, read from the export team's
 // `Leads` sheet (see backend/routers/export.py).
 //
 // Filters live here, above the tabs, and every tab is fed from the same filter
@@ -15,13 +15,17 @@ import {
   type Filters, type FilterOptions, type Summary, type Lead, type SyncMeta, type ActivityResponse,
 } from "./shared";
 import ActivityTab from "./ActivityTab";
+import HighlightsTab from "./HighlightsTab";
 import PipelineTab from "./PipelineTab";
 import LeadsTab from "./LeadsTab";
 import SheetTab from "./SheetTab";
 
-type TabId = "pipeline" | "leads" | "activity" | "sheet";
+type TabId = "highlights" | "pipeline" | "leads" | "activity" | "sheet";
 
+// Highlights first, and the page opens on it: it is the answer to "what needs
+// doing", which is the question most people open this module with.
 const TABS: { id: TabId; label: string }[] = [
+  { id: "highlights", label: "Highlights" },
   { id: "pipeline", label: "Pipeline" },
   { id: "leads", label: "Leads" },
   { id: "activity", label: "Activity" },
@@ -29,6 +33,7 @@ const TABS: { id: TabId; label: string }[] = [
 ];
 
 const TAB_SUBTITLES: Record<TabId, string> = {
+  highlights: "What needs attention now, worst first — and why each lead is the colour it is",
   pipeline: "UK, Europe and Australia leads — where each one stands today",
   leads: "Every lead in the selection, with its contacts, dates and next action",
   activity: "What happened in a period — contacts logged, stage moves, wins and losses",
@@ -46,7 +51,7 @@ export default function ExportPage() {
   const canManage = MANAGERS.has(user?.role ?? "");
   const tabs = useMemo(() => TABS.filter((t) => t.id !== "sheet" || canManage), [canManage]);
 
-  const [activeTab, setActiveTab] = useState<TabId>("pipeline");
+  const [activeTab, setActiveTab] = useState<TabId>("highlights");
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [staleDays, setStaleDays] = useState(30);
   const [options, setOptions] = useState<FilterOptions | null>(null);
@@ -114,12 +119,13 @@ export default function ExportPage() {
     setLoading(true);
     (async () => {
       try {
-        const path = { pipeline: "summary", leads: "leads", activity: "activity" }[activeTab];
+        // Highlights and Pipeline draw from the same /summary payload.
+        const path = { highlights: "summary", pipeline: "summary", leads: "leads", activity: "activity" }[activeTab];
         const res = await fetch(`${API_URL}/export/${path}?${params}`, { headers, signal: ctrl.signal });
         const body = await res.json();
         if (!res.ok) throw new Error(body.detail ?? `Request failed (${res.status})`);
         setError(null);
-        if (activeTab === "pipeline") setSummary(body);
+        if (activeTab === "pipeline" || activeTab === "highlights") setSummary(body);
         else if (activeTab === "leads") setLeads(body.leads);
         else setActivityData(body);
         setSync(body.sync);
@@ -135,7 +141,7 @@ export default function ExportPage() {
   }, [activeTab, filters, staleDays, headers, refreshKey, ppKey]);
 
   useEffect(() => {
-    if (!tabs.some((t) => t.id === activeTab)) setActiveTab("pipeline");
+    if (!tabs.some((t) => t.id === activeTab)) setActiveTab("highlights");
   }, [tabs, activeTab]);
 
   const runSync = useCallback(async () => {
@@ -175,6 +181,14 @@ export default function ExportPage() {
     setFilters({ ...filters, stage: String(stage) });
     setActiveTab("leads");
   };
+  // Every "click to list them" on Highlights and Pipeline lands here: narrow
+  // the shared filters, then show the rows. The filter bar shows what was set,
+  // so the user can see why the list is shorter.
+  const drillTo = (patch: Partial<Filters>) => {
+    setFilters({ ...filters, ...patch });
+    setActiveTab("leads");
+  };
+  const isSummaryTab = activeTab === "pipeline" || activeTab === "highlights";
 
   const windowLabel = period.mode === "all" ? "all time"
     : period.mode === "custom"
@@ -185,9 +199,9 @@ export default function ExportPage() {
   const filtered = hasAnyFilter(filters);
   const registered = sync?.registered ?? true;
   const nothingSynced = registered && !filtered
-    && ((activeTab === "pipeline" && summary?.kpis.leads === 0) || (activeTab === "leads" && leads?.length === 0));
+    && ((isSummaryTab && summary?.kpis.leads === 0) || (activeTab === "leads" && leads?.length === 0));
   const emptySelection = filtered
-    && ((activeTab === "pipeline" && summary?.kpis.leads === 0) || (activeTab === "leads" && leads?.length === 0));
+    && ((isSummaryTab && summary?.kpis.leads === 0) || (activeTab === "leads" && leads?.length === 0));
 
   return (
     <div className="p-6 flex flex-col gap-5">
@@ -271,9 +285,11 @@ export default function ExportPage() {
                 </button>.
               </p>
             </Notice>
+          ) : activeTab === "highlights" ? (
+            summary && <HighlightsTab data={summary} regionLabel={regionLabel} onFilter={drillTo} />
           ) : activeTab === "pipeline" ? (
             summary && <PipelineTab data={summary} staleDays={staleDays} setStaleDays={setStaleDays}
-              regionLabel={regionLabel} onPickStage={pickStage} />
+              regionLabel={regionLabel} onPickStage={pickStage} onFilter={drillTo} />
           ) : activeTab === "leads" ? (
             leads && <LeadsTab leads={leads} staleDays={staleDays} regionLabel={regionLabel} />
           ) : period.mode === "custom" && !pp ? (

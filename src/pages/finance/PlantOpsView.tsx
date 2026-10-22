@@ -163,13 +163,6 @@ function UnitsSegmentBlock({ label, salesItems, prodItems, view, bucket }: {
   );
 }
 
-const EMPTY_SECTIONS = [
-  { title: "Production Cost Stages", desc: "₹/set by Cutting · Production · Process · OH" },
-  { title: "Alteration Report (Online / Offline)", desc: "Orders, alterations & rework rate %" },
-  { title: "Stock Audit & Variance", desc: "Book vs physical, variance % & tolerance sign-off" },
-  { title: "Consumption Summary", desc: "Consumption by product category" },
-];
-
 export default function PlantOpsView({ sheetSourceId, refreshNonce = 0 }: { sheetSourceId: string; refreshNonce?: number }) {
   const { token } = useAuth();
   const [data, setData] = useState<FinAnalytics | null>(null);
@@ -250,22 +243,6 @@ export default function PlantOpsView({ sheetSourceId, refreshNonce = 0 }: { shee
           The Units and Unit Cost sections are empty for this company. Click “Sync Now” once the sheet has data.
         </EmptyState>
       )}
-
-      {/* Sections still awaiting data from finance — auto-populate on future sync */}
-      <div className="flex flex-col gap-3">
-        <SectionHeading>Awaiting data from finance</SectionHeading>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {EMPTY_SECTIONS.map((it) => (
-            <div key={it.title} className="bg-white border border-[#EAE3D6] rounded-2xl p-4 flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-gray-700">{it.title}</div>
-                <div className="text-[11px] text-gray-500 mt-0.5">{it.desc}</div>
-              </div>
-              <span className="text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap bg-[#F5F0E8] text-[#8F8A83]">Empty in sheet</span>
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }

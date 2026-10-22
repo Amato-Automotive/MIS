@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import {
   KpiCard, MoneyTrendCard, GroupBlock, DashboardControls, EmptyState, RatiosPanel,
-  CashCycleCard, ReconciliationPanel, WatchListCard, SectionHeading, AgingPanel, bucketLabelsOf, bucketChange, bucketEndDate, bucketPercent,
+  CashCycleCard, ReconciliationPanel, WatchListCard, SectionHeading, AgingPanel, bucketLabelsOf, bucketChange, bucketEndDate, bucketPercent, fmtAsAt,
   type FinAnalytics, type FinGroup, type FinPoint,
 } from "./dashboardKit";
 import type { TrendView } from "./aggregate";
@@ -14,12 +14,6 @@ function findTotalSeries(groups: FinGroup[], sectionKey: string, subKey: string)
   const g = groups.find((x) => x.section_key === sectionKey);
   const sub = g?.sub_sections.find((s) => s.key === subKey);
   return sub?.total?.series ?? [];
-}
-
-// ISO date → "30 Jun 2026" (UTC, so a period-end date never slips a day by tz).
-function fmtAsAt(iso: string | null): string {
-  if (!iso) return "";
-  return new Date(iso + "T00:00:00Z").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
 }
 
 export default function BalanceSheetView({ sheetSourceId, refreshNonce = 0 }: { sheetSourceId: string; refreshNonce?: number }) {

@@ -135,9 +135,16 @@ export function buildTimeline(series: FinPoint[], kind: "stock" | "flow", view: 
   const annualByFy = new Map<number, { amount: number; period_end_date: string }>();
   for (const p of annual) annualByFy.set(fyOf(new Date(p.period_end_date)), p);
   const fys = [...new Set<number>([...fyMap.keys(), ...annualByFy.keys()])].sort((a, b) => a - b);
+  // `end` is the date the value actually comes from: a current FY read from its
+  // months ends at the latest month, not 31 Mar — even when the yearly sheet also
+  // carries a (possibly different) figure dated 31 Mar for that FY.
   return fys.map((fy) => {
-    const value = fyMap.has(fy) ? agg(fyMap.get(fy)!) : annualByFy.get(fy)!.amount;
-    return { label: `FY ${String(fy).slice(2)}-${String(fy + 1).slice(2)}`, value, end: `${fy + 1}-03-31` };
+    const months = fyMap.get(fy);
+    const value = months ? agg(months) : annualByFy.get(fy)!.amount;
+    const end = months
+      ? months.reduce((m, p) => (p.period_end_date > m ? p.period_end_date : m), months[0].period_end_date)
+      : annualByFy.get(fy)!.period_end_date;
+    return { label: `FY ${String(fy).slice(2)}-${String(fy + 1).slice(2)}`, value, end };
   });
 }
 
@@ -203,13 +210,18 @@ export function bucketLabelsOf(series: FinPoint[], kind: "stock" | "flow", view:
   return [...new Set(buildTimeline(series, kind, view).map((x) => x.label))];
 }
 
-// The actual period-end date of a bucket (the latest data point inside it) — so a
-// stock KPI can be labelled "as at <date>" rather than by the bucket name. This
-// makes clear that a quarter/year balance IS the period-end snapshot, not a sum.
+// The period-end date a bucket's value comes from — so a stock KPI can be
+// labelled "as at <date>" rather than by the bucket name, making clear a
+// quarter/year balance IS the period-end snapshot, not a sum. Taken from
+// buildTimeline so the date always belongs to the figure shown beside it.
 export function bucketEndDate(series: FinPoint[], view: TrendView, label: string): string | null {
-  const inBucket = series.filter((p) => p.amount != null && pointBucketLabel(p, view) === label);
-  if (inBucket.length === 0) return null;
-  return [...inBucket].sort((a, b) => a.period_end_date.localeCompare(b.period_end_date)).slice(-1)[0].period_end_date;
+  return buildTimeline(series, "stock", view).find((x) => x.label === label)?.end ?? null;
+}
+
+// ISO date → "30 Jun 2026" (UTC, so a period-end date never slips a day by tz).
+export function fmtAsAt(iso: string | null): string {
+  if (!iso) return "";
+  return new Date(iso + "T00:00:00Z").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
 }
 
 // Value at the selected bucket plus the previous bucket (for a like-for-like
@@ -971,7 +983,9 @@ function insightCCC(ratios: RatioCat[], view: TrendView, bucket: string): number
 export function buildInsights(data: FinAnalytics, view: TrendView, bucket: string): { sev: number; text: string }[] {
   const out: { sev: number; text: string }[] = [];
   for (const t of data.reconciliation ?? []) {
-    if (!t.matches) out.push({ sev: 3, text: `${t.label} doesn't reconcile — off by ${formatCompact(Math.abs(t.delta))}.` });
+    // Name the date: the check runs on each line's latest row, which can be a
+    // yearly-sheet column the period picker isn't showing.
+    if (!t.matches) out.push({ sev: 3, text: `${t.label} doesn't reconcile as at ${fmtAsAt(t.period)} — off by ${formatCompact(Math.abs(t.delta))}.` });
   }
   for (const c of data.ratios ?? []) for (const it of c.items) {
     const v = ratioAt(it, view, bucket);
@@ -1028,6 +1042,7 @@ export function ReconciliationPanel({ ties }: { ties: ReconTie[] }) {
               <span className="text-[12px] font-bold text-gray-700">{t.label}</span>
               <span className="text-[11px] font-bold" style={{ color: t.matches ? SUCCESS_COLOR : DANGER_COLOR }}>{t.matches ? "✓ Tied" : "✗ Off"}</span>
             </div>
+            <div className="text-[10px] text-gray-500">as at {fmtAsAt(t.period)}</div>
             <div className="mt-1.5 text-[11px] text-gray-500 flex items-center justify-between">
               <span>{t.left.name}</span><span className="font-semibold text-gray-700" title={formatINR(t.left.value)}>{formatCompact(t.left.value)}</span>
             </div>

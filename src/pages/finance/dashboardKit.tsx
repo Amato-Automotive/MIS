@@ -93,7 +93,9 @@ function fyOf(d: Date) {
 // Indian-FY quarters; yearly prefers aggregating the FY's months when present
 // (current partial FY reads as FY-to-date) and otherwise uses the sheet's own
 // annual point for the years that only have yearly data.
-export function buildTimeline(series: FinPoint[], kind: "stock" | "flow", view: TrendView): { label: string; value: number }[] {
+export type TimelinePoint = { label: string; value: number; end: string };
+
+export function buildTimeline(series: FinPoint[], kind: "stock" | "flow", view: TrendView): TimelinePoint[] {
   const pts = series.filter((p): p is FinPoint & { amount: number } => p.amount != null);
   const monthly = pts.filter((p) => p.period_type === "monthly");
   const annual = pts.filter((p) => p.period_type === "annual");
@@ -106,7 +108,7 @@ export function buildTimeline(series: FinPoint[], kind: "stock" | "flow", view: 
   if (view === "monthly") {
     return [...monthly]
       .sort((a, b) => a.period_end_date.localeCompare(b.period_end_date))
-      .map((p) => ({ label: periodLabel(p), value: p.amount }));
+      .map((p) => ({ label: periodLabel(p), value: p.amount, end: p.period_end_date }));
   }
 
   if (view === "quarterly") {
@@ -122,7 +124,7 @@ export function buildTimeline(series: FinPoint[], kind: "stock" | "flow", view: 
       if (p.period_end_date > b.sort) b.sort = p.period_end_date;
       buckets.set(key, b);
     }
-    return [...buckets.values()].sort((a, b) => a.sort.localeCompare(b.sort)).map((b) => ({ label: b.label, value: agg(b.arr) }));
+    return [...buckets.values()].sort((a, b) => a.sort.localeCompare(b.sort)).map((b) => ({ label: b.label, value: agg(b.arr), end: b.sort }));
   }
 
   const fyMap = new Map<number, typeof monthly>();
@@ -135,8 +137,18 @@ export function buildTimeline(series: FinPoint[], kind: "stock" | "flow", view: 
   const fys = [...new Set<number>([...fyMap.keys(), ...annualByFy.keys()])].sort((a, b) => a - b);
   return fys.map((fy) => {
     const value = fyMap.has(fy) ? agg(fyMap.get(fy)!) : annualByFy.get(fy)!.amount;
-    return { label: `FY ${String(fy).slice(2)}-${String(fy + 1).slice(2)}`, value };
+    return { label: `FY ${String(fy).slice(2)}-${String(fy + 1).slice(2)}`, value, end: `${fy + 1}-03-31` };
   });
+}
+
+// Period labels across several timelines, chronological. Each timeline is
+// sorted on its own, but a period only some items carry (a yearly sheet added
+// later) would land at the end in first-seen order — and the labels themselves
+// ("Jun 2026", "Q1 FY27", "FY 24-25") don't sort as strings.
+export function mergedLabels(timelines: TimelinePoint[][]): string[] {
+  const ends = new Map<string, string>();
+  for (const tl of timelines) for (const p of tl) if (!ends.has(p.label)) ends.set(p.label, p.end);
+  return [...ends.keys()].sort((a, b) => ends.get(a)!.localeCompare(ends.get(b)!));
 }
 
 export function valueAt(series: FinPoint[], periodEnd: string): number | null {
@@ -534,8 +546,7 @@ function CompositionByPeriodCard({ sub, kind, groupLabel, colorMap, view }:
 
   const { data, keys } = useMemo(() => {
     const perItem = items.map((it) => ({ it, tl: buildTimeline(it.series, kind, view) }));
-    const labels: string[] = [];
-    for (const { tl } of perItem) for (const p of tl) if (!labels.includes(p.label)) labels.push(p.label);
+    const labels = mergedLabels(perItem.map((p) => p.tl));
     const rows = labels.map((label) => {
       const row: Record<string, any> = { label };
       for (const { it, tl } of perItem) row[it.line_key] = tl.find((x) => x.label === label)?.value ?? 0;
@@ -1097,12 +1108,12 @@ export function AgingPanel({ group, view, bucket }: { group: FinGroup; view: Tre
     const perCat = group.sub_sections.map((sub) => {
       const cur = agingBucketOf(sub, "/lt_90_days");
       const aged = agingBucketOf(sub, "/gt_90_days");
-      const c = new Map(buildTimeline(cur?.series ?? [], "stock", view).map((x) => [x.label, x.value]));
+      const ctl = buildTimeline(cur?.series ?? [], "stock", view);
+      const c = new Map(ctl.map((x) => [x.label, x.value]));
       const a = new Map(buildTimeline(aged?.series ?? [], "stock", view).map((x) => [x.label, x.value]));
-      return { key: sub.key ?? "", label: sub.label ?? sub.key ?? "—", c, a };
+      return { key: sub.key ?? "", label: sub.label ?? sub.key ?? "—", c, a, ctl };
     });
-    const labels: string[] = [];
-    for (const p of perCat) for (const l of p.c.keys()) if (!labels.includes(l)) labels.push(l);
+    const labels = mergedLabels(perCat.map((p) => p.ctl));
     return labels.map((label) => {
       const row: Record<string, any> = { label };
       for (const p of perCat) {
@@ -1207,9 +1218,11 @@ export function UnitCostPanel({ group, view, bucket }: { group: FinGroup; view: 
   }).filter((r) => r.value != null && r.value > 0), [items, view, bucket]);
 
   const trend = useMemo(() => {
-    const per = items.map((it) => ({ it, m: new Map(buildTimeline(it.series, "stock", view).map((x) => [x.label, x.value])) }));
-    const labels: string[] = [];
-    for (const p of per) for (const l of p.m.keys()) if (!labels.includes(l)) labels.push(l);
+    const per = items.map((it) => {
+      const tl = buildTimeline(it.series, "stock", view);
+      return { it, tl, m: new Map(tl.map((x) => [x.label, x.value])) };
+    });
+    const labels = mergedLabels(per.map((p) => p.tl));
     return labels.map((label) => {
       const row: Record<string, any> = { label };
       for (const p of per) row[p.it.line_key] = p.m.get(label) ?? null;

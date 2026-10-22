@@ -363,6 +363,28 @@ def list_sheet_sources(db: Session = Depends(get_db), current_user: User = Depen
     ]
 
 
+class CompanyRenameIn(BaseModel):
+    label: str
+
+
+# Changes the display name only. The company's identity is sheet_id (the slug of
+# its master-sheet tab), which access grants and finance_lines hang off — so the
+# tab keeps its old name and sync, which sets label only on create, leaves this be.
+@router.patch("/sheet-sources/{source_id}")
+def rename_sheet_source(source_id: str, body: CompanyRenameIn, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_module(db, current_user, MODULE_KEY)
+    _require_admin(current_user)
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="Company name cannot be empty")
+    source = db.query(SheetSource).filter(SheetSource.id == source_id, SheetSource.module == MODULE, SheetSource.kind == "company").first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Company not found")
+    source.label = label
+    db.commit()
+    return {"id": str(source.id), "sheet_id": source.sheet_id, "label": source.label}
+
+
 @router.delete("/sheet-sources/{source_id}")
 def delete_sheet_source(source_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_module(db, current_user, MODULE_KEY)

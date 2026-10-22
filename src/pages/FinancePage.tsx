@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  RefreshCw, Plus, ChevronDown, ChevronUp, CheckCircle2, XCircle, Clock, History, Trash2, Printer, Database,
+  RefreshCw, Plus, ChevronDown, ChevronUp, CheckCircle2, XCircle, Clock, History, Trash2, Pencil, Printer, Database,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/components/ui/Toast";
@@ -191,6 +191,28 @@ export default function FinancePage() {
     }
   };
 
+  const handleRenameCompany = async () => {
+    const source = sources.find((s) => s.id === selectedId);
+    if (!source) return;
+    const label = window.prompt(`Display name for "${source.label}".\n\nOnly the name shown in the app changes — keep the tab name in the master sheets as it is.`, source.label)?.trim();
+    if (!label || label === source.label) return;
+    try {
+      const res = await fetch(`${API_URL}/finance/sheet-sources/${source.id}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      await loadSources();
+      toast.success("Company renamed", `"${source.label}" is now "${label}".`);
+    } catch (e) {
+      toast.error("Couldn't rename company", e instanceof Error ? e.message : "Please try again.");
+    }
+  };
+
   const handleDeleteCompany = async () => {
     if (!selectedId) return;
     const source = sources.find((s) => s.id === selectedId);
@@ -303,6 +325,12 @@ export default function FinancePage() {
               options={companyOptions}
               className="min-w-[180px]"
             />
+            {isAdmin && selectedId && !isConsolidated && (
+              <button onClick={handleRenameCompany} title="Rename company"
+                className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-gray-800 px-2 py-2 rounded-xl border border-gray-200 hover:border-gray-300 transition-all">
+                <Pencil size={13} />
+              </button>
+            )}
             {isAdmin && selectedId && !isConsolidated && (
               <button onClick={handleDeleteCompany}
                 className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-red-500 px-2 py-2 rounded-xl border border-gray-200 hover:border-red-200 transition-all">

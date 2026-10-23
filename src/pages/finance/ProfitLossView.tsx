@@ -6,6 +6,7 @@ import {
   type FinAnalytics, type FinGroup, type FinPoint,
 } from "./dashboardKit";
 import type { TrendView } from "./aggregate";
+import { MarginClassCard } from "./MarginClassCard";
 import { formatINR, formatKpi, REVENUE_COLOR, GROSS_PROFIT_COLOR, NETT_PROFIT_COLOR, SUCCESS_COLOR } from "./format";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -95,6 +96,8 @@ export default function ProfitLossView({ sheetSourceId, refreshNonce = 0 }: { sh
           <div className="text-[11px] font-medium text-gray-500 mt-0.5">{salesCh.prevLabel ? `${salesCh.prevLabel} → ${effBucket}` : "No prior period"}</div>
         </div>
       </div>
+
+      <MarginClassCard sales={salesCh.value} pat={patCh.value} bucket={effBucket} />
 
       <WatchListCard data={data} view={view} bucket={effBucket} />
 

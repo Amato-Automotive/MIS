@@ -391,6 +391,13 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
             # blank row is just an empty line item and keeps the current grouping.
             if section_key == "balance_sheet" and _cf_norm(label) not in _BS_SUBHEADERS:
                 continue
+            # The P&L is one flat run (Sales → … → PAT) with no sub-headers at all.
+            # A blank "Provision for Expenses" used to become one, re-filing
+            # PBITDA…PAT under profit_loss_a_c/provision_for_expenses/* — a second,
+            # empty PBITDA…PAT block in the detail table, and the bridge/KPIs
+            # (which look for profit_loss_a_c/pbitda) lost those periods.
+            if section_key == "profit_loss_a_c":
+                continue
             sub_section = _slugify(label)  # sub-header — context only, not stored
         else:
             emit(label, "line_item")

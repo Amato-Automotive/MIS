@@ -108,6 +108,18 @@ export default function FinancePage() {
 
   useEffect(() => { loadSources(); loadMasters(); loadHistory(); }, [loadSources, loadMasters, loadHistory]);
 
+  // The browser stamps its own header/footer (page title "AMATO AUTOMOTIVE MIS",
+  // URL) into the page margin; a zero @page margin leaves it no room, so the
+  // board pack carries only our own header. Mounted with this page so other
+  // modules' PDFs keep the default; .finance-print restores the whitespace on
+  // every page via box-decoration-break.
+  useEffect(() => {
+    const style = document.createElement("style");
+    style.textContent = "@media print { @page { margin: 0; } }";
+    document.head.appendChild(style);
+    return () => style.remove();
+  }, []);
+
   // Track the sticky header's height so the controls bar can sit flush under it
   // instead of overlapping when the header wraps to two rows.
   useEffect(() => {
@@ -276,11 +288,10 @@ export default function FinancePage() {
   ];
 
   return (
-    <div className="p-6 flex flex-col gap-6">
+    <div className="finance-print p-6 flex flex-col gap-6">
       {/* Print-only board-pack header */}
       <div className="print-only mb-2">
-        <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-gray-500">AutoForm · Financial Dashboard</div>
-        <div className="text-xl font-bold text-gray-900 mt-0.5">{companyLabel} — {statementLabel}</div>
+        <div className="text-xl font-bold text-gray-900">{companyLabel} — {statementLabel}</div>
         <div className="text-[11px] text-gray-500">Generated {new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</div>
       </div>
 

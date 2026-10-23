@@ -18,6 +18,10 @@
   section, .print-avoid-break { break-inside: avoid; }
   * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
   @page { margin: 12mm; }
+  /* FinancePage zeroes the @page margin to drop the browser's header; clone
+     puts this padding back at the top and bottom of every page, not just the
+     first and last. */
+  .finance-print { padding: 12mm !important; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 }
 
 /* ─── Design Tokens ─────────────────────────────────── */

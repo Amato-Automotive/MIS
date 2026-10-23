@@ -22,6 +22,7 @@ import {
   formatCompact, formatINR, SUCCESS_COLOR, DANGER_COLOR, NEUTRAL_COLOR,
   REVENUE_COLOR, APPLICATION_COLOR,
 } from "./format";
+import { MARGIN_BANDS, classifyMargin, netPatMargin } from "./margin";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -115,8 +116,9 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
     const pat = bucketValue(c.pl.pat, "flow", view, effBucket);
     // Margin is a ratio of the two bucket figures — never an average of monthly
     // margins, and only meaningful on a positive base.
-    const margin = sales != null && sales > 0 && pat != null ? (pat / sales) * 100 : null;
-    return { id: c.id, label: c.label, sales, gross, pbitda, pat, margin };
+    const ratio = netPatMargin(sales, pat);
+    const margin = ratio != null ? ratio * 100 : null;
+    return { id: c.id, label: c.label, sales, gross, pbitda, pat, margin, band: classifyMargin(ratio) };
   }), [companies, view, effBucket]);
 
   const bsRows = useMemo(() => companies.map((c) => {
@@ -157,6 +159,7 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
                   <Th>PBITDA</Th>
                   <Th>PAT</Th>
                   <Th>PAT Margin</Th>
+                  <Th align="center">Classification</Th>
                 </tr>
               </thead>
               <tbody>
@@ -171,10 +174,26 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
                       style={{ color: r.margin == null ? NEUTRAL_COLOR : r.margin >= 0 ? SUCCESS_COLOR : DANGER_COLOR }}>
                       {r.margin == null ? "—" : `${r.margin.toFixed(1)}%`}
                     </td>
+                    <td className="px-4 py-3 text-center whitespace-nowrap">
+                      {r.band ? (
+                        <span className="inline-block min-w-[80px] rounded-md px-2 py-0.5 text-[11px] font-bold"
+                          style={{ background: r.band.bg, color: r.band.fg }}>{r.band.label}</span>
+                      ) : <span className="text-[11px] font-medium text-gray-400">—</span>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+          {/* Same key as the P&L tab's Margin Classification panel. */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 border-t border-[#EAE3D6] text-[11px] text-gray-500">
+            <span>Classification = PAT Margin (PAT ÷ Sales) for {effBucket || "the period"}, banded:</span>
+            {MARGIN_BANDS.map((b) => (
+              <span key={b.key} className="inline-flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded-sm" style={{ background: b.bg }} />
+                <span className="text-gray-600"><b>{b.label}</b> {b.range}</span>
+              </span>
+            ))}
           </div>
         </div>
       )}

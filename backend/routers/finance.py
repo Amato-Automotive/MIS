@@ -478,11 +478,89 @@ def _monthly_flow(series: list) -> list:
             for p in series if p["period_type"] == "monthly" and p["amount"] is not None]
 
 
+# ── Ratio derivations for quarter / year buckets ─────────────────────────────
+# The sheet publishes ratios per MONTH only, and the yearly file reuses those
+# monthly formulas unchanged (PBITDA ×12, debtors ×30) on full-year figures, so
+# its annual ratios are overstated — FY 25-26 ROI reads 411% for AMATO SRN
+# against a true 34%. A quarter or a year therefore has no ratio of its own to
+# mirror, and taking the last month's value labelled September's MoM Sales
+# Growth as "Q2". Instead each flow-based ratio ships the figures it is made of,
+# and the frontend recomputes a bucket from the bucket's own figures with the
+# sheet's OWN formulas — identical on all 18 company tabs, checked 2026-10-26 —
+# so a one-month bucket reproduces the sheet exactly. Balance-only ratios
+# (current, quick, debt/equity) need none of this: a quarter-end balance ratio IS
+# the last month's, so they keep the stock rule.
+_PBITDA = ("profit_loss_a_c/pbitda", "PBITDA")
+_FIN_COST = ("profit_loss_a_c/finance_s_cost", "Finance's Cost")
+_SALES = ("sales_accounts/total", "Sales")
+_MATERIAL = ("profit_loss_a_c/cost_of_material", "Cost of Material")
+_APP_TOTAL = ("balance_sheet/application_of_funds/total", "Application of Funds")
+_CUR_LIAB = ("balance_sheet/sources_of_funds/current_liabilities", "Current Liabilities")
+_RESERVES = ("balance_sheet/sources_of_funds/reserve_surplus", "Reserve & Surplus")
+_NWC = ("working_capital/net_working_capital", "Net Working Capital")
+_DEBTORS = ("working_capital/current_assets/sundry_debtors", "Sundry Debtors")
+_CREDITORS = ("working_capital/current_liabilities/sundry_creditors", "Sundry Creditors")
+_INVENTORY = ("inventories/total", "Inventories")
+
+_RATIO_DERIVATIONS = {
+    "return_on_investment": {"kind": "return", "num": _PBITDA, "den": [(1, _APP_TOTAL)]},
+    "return_on_equity_ratio": {"kind": "return", "num": _PBITDA, "den": [(1, _RESERVES)]},
+    "return_on_wkg_capital": {"kind": "return", "num": _PBITDA, "den": [(1, _NWC)]},
+    "return_on_capital_employed": {"kind": "return", "num": _PBITDA, "den": [(1, _APP_TOTAL), (-1, _CUR_LIAB)]},
+    "debts_covering_ratio": {"kind": "flow_ratio", "num": _PBITDA, "den": _FIN_COST},
+    "recv_turnover_in_days": {"kind": "days", "terms": [(1, _DEBTORS, _SALES)]},
+    "inventory_turnover_in_days": {"kind": "days", "terms": [(1, _INVENTORY, _MATERIAL)]},
+    "vendor_turnover_in_days": {"kind": "days", "terms": [(1, _CREDITORS, _MATERIAL)]},
+    "sales_growth": {"kind": "growth", "base": _SALES},
+    "profit_growth": {"kind": "growth", "base": _PBITDA},
+}
+# Efficiency's "Net" row (Recv + Inventory − Vendor days) is matched on its
+# sub-section as well — "net" on its own is too generic a slug to trust.
+_NET_DAYS = {"kind": "days", "terms": [(1, _DEBTORS, _SALES), (1, _INVENTORY, _MATERIAL), (-1, _CREDITORS, _MATERIAL)]}
+_EFFICIENCY_SUBS = {"eficiency_ratio", "efficiency_ratio"}
+
+
+def _ratio_spec(sub_section: str, line_key: str):
+    slug = line_key.rsplit("/", 1)[-1]
+    if slug == "net":
+        return _NET_DAYS if sub_section in _EFFICIENCY_SUBS else None
+    return _RATIO_DERIVATIONS.get(slug)
+
+
+def _spec_keys(spec: dict) -> set:
+    if spec["kind"] == "return":
+        return {spec["num"][0]} | {inp[0] for _, inp in spec["den"]}
+    if spec["kind"] == "flow_ratio":
+        return {spec["num"][0], spec["den"][0]}
+    if spec["kind"] == "days":
+        return {k for _, stock, flow in spec["terms"] for k in (stock[0], flow[0])}
+    return {spec["base"][0]}
+
+
+def _materialize_spec(spec: dict, inputs: dict) -> dict:
+    """Spec → JSON for the frontend: every input as {label, series}."""
+    def inp(ref):
+        key, label = ref
+        return {"label": label, "series": inputs.get(key, [])}
+    kind = spec["kind"]
+    if kind == "return":
+        return {"kind": kind, "num": inp(spec["num"]),
+                "den": [{"sign": sign, **inp(ref)} for sign, ref in spec["den"]]}
+    if kind == "flow_ratio":
+        return {"kind": kind, "num": inp(spec["num"]), "den": inp(spec["den"])}
+    if kind == "days":
+        return {"kind": kind, "terms": [{"sign": sign, "stock": inp(stock), "flow": inp(flow)}
+                                        for sign, stock, flow in spec["terms"]]}
+    return {"kind": kind, "base": inp(spec["base"])}
+
+
 def _collect_ratios(db: Session, sid: str, sub_slugs: list) -> list:
     """Key Financial Ratios for the given category sub-sections → a list of
     {key, label, items:[{line_key, line_label, series:[{period_end_date,
-    period_type, amount}]}]}. Ratios are a single value per period (no percent,
-    no total), so they get their own card panel, not the additive GroupBlock."""
+    period_type, amount}], derive}]}. Ratios are a single value per period (no
+    percent, no total), so they get their own card panel, not the additive
+    GroupBlock. `derive` is the recipe for quarter/year buckets — see
+    _RATIO_DERIVATIONS — or None for balance-only ratios."""
     rows = db.execute(text("""
         SELECT sub_section, item_no, line_key, line_label, period_end_date, period_type, amount
         FROM finance_lines
@@ -499,10 +577,28 @@ def _collect_ratios(db: Session, sid: str, sub_slugs: list) -> list:
             "period_end_date": r.period_end_date.isoformat(), "period_type": r.period_type,
             "amount": float(r.amount) if r.amount is not None else None,
         })
+    specs = {key: _ratio_spec(sub, key) for sub, cat in cats.items() for key in cat}
+    needed = set().union(*(_spec_keys(s) for s in specs.values() if s))
+    inputs: dict = {}
+    if needed:
+        for r in db.execute(text("""
+            SELECT line_key, period_end_date, period_type, amount
+            FROM finance_lines
+            WHERE sheet_source_id = :sid AND line_key = ANY(:keys) AND amount IS NOT NULL
+            ORDER BY period_end_date
+        """), {"sid": sid, "keys": sorted(needed)}).fetchall():
+            inputs.setdefault(r.line_key, []).append({
+                "period_end_date": r.period_end_date.isoformat(), "period_type": r.period_type,
+                "amount": float(r.amount),
+            })
+
     out = []
     for sub in sub_slugs:
         if sub in cats:
             items = sorted(cats[sub].values(), key=lambda x: (x["item_no"] is None, x["item_no"] or 0))
+            for it in items:
+                spec = specs.get(it["line_key"])
+                it["derive"] = _materialize_spec(spec, inputs) if spec else None
             out.append({"key": sub, "label": _RATIO_SUB_LABELS.get(sub, sub), "items": items})
     return out
 

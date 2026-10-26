@@ -53,7 +53,18 @@ export interface FinPeriod {
   period_type: "monthly" | "annual";
 }
 export interface RatioPoint { period_end_date: string; period_type: "monthly" | "annual"; amount: number | null; }
-export interface RatioItem { line_key: string; line_label: string; item_no: number | null; series: RatioPoint[]; }
+export interface RatioInput { label: string; series: RatioPoint[]; }
+// How to rebuild a flow-based ratio for a quarter or year from its own figures,
+// using the sheet's monthly formula — see _RATIO_DERIVATIONS in routers/finance.py.
+export type RatioDerive =
+  | { kind: "return"; num: RatioInput; den: (RatioInput & { sign: 1 | -1 })[] }
+  | { kind: "flow_ratio"; num: RatioInput; den: RatioInput }
+  | { kind: "days"; terms: { sign: 1 | -1; stock: RatioInput; flow: RatioInput }[] }
+  | { kind: "growth"; base: RatioInput };
+export interface RatioItem {
+  line_key: string; line_label: string; item_no: number | null; series: RatioPoint[];
+  derive?: RatioDerive | null;
+}
 export interface RatioCat { key: string; label: string; items: RatioItem[]; }
 export interface ReconTie {
   label: string;
@@ -93,10 +104,13 @@ function fyOf(d: Date) {
 // Indian-FY quarters; yearly prefers aggregating the FY's months when present
 // (current partial FY reads as FY-to-date) and otherwise uses the sheet's own
 // annual point for the years that only have yearly data.
-export type TimelinePoint = { label: string; value: number; end: string };
+// `months` is how many months the value covers (an annual-only FY counts 12) —
+// what a ratio needs to annualise a part-year or to know a bucket is incomplete.
+export type TimelinePoint = { label: string; value: number; end: string; months: number };
+export type TimelineInput = Pick<FinPoint, "period_end_date" | "period_type" | "amount">;
 
-export function buildTimeline(series: FinPoint[], kind: "stock" | "flow", view: TrendView): TimelinePoint[] {
-  const pts = series.filter((p): p is FinPoint & { amount: number } => p.amount != null);
+export function buildTimeline(series: TimelineInput[], kind: "stock" | "flow", view: TrendView): TimelinePoint[] {
+  const pts = series.filter((p): p is TimelineInput & { amount: number } => p.amount != null);
   const monthly = pts.filter((p) => p.period_type === "monthly");
   const annual = pts.filter((p) => p.period_type === "annual");
 
@@ -108,7 +122,7 @@ export function buildTimeline(series: FinPoint[], kind: "stock" | "flow", view: 
   if (view === "monthly") {
     return [...monthly]
       .sort((a, b) => a.period_end_date.localeCompare(b.period_end_date))
-      .map((p) => ({ label: periodLabel(p), value: p.amount, end: p.period_end_date }));
+      .map((p) => ({ label: periodLabel(p), value: p.amount, end: p.period_end_date, months: 1 }));
   }
 
   if (view === "quarterly") {
@@ -124,7 +138,8 @@ export function buildTimeline(series: FinPoint[], kind: "stock" | "flow", view: 
       if (p.period_end_date > b.sort) b.sort = p.period_end_date;
       buckets.set(key, b);
     }
-    return [...buckets.values()].sort((a, b) => a.sort.localeCompare(b.sort)).map((b) => ({ label: b.label, value: agg(b.arr), end: b.sort }));
+    return [...buckets.values()].sort((a, b) => a.sort.localeCompare(b.sort))
+      .map((b) => ({ label: b.label, value: agg(b.arr), end: b.sort, months: b.arr.length }));
   }
 
   const fyMap = new Map<number, typeof monthly>();
@@ -144,7 +159,7 @@ export function buildTimeline(series: FinPoint[], kind: "stock" | "flow", view: 
     const end = months
       ? months.reduce((m, p) => (p.period_end_date > m ? p.period_end_date : m), months[0].period_end_date)
       : annualByFy.get(fy)!.period_end_date;
-    return { label: `FY ${String(fy).slice(2)}-${String(fy + 1).slice(2)}`, value, end };
+    return { label: `FY ${String(fy).slice(2)}-${String(fy + 1).slice(2)}`, value, end, months: months ? months.length : 12 };
   });
 }
 
@@ -165,7 +180,7 @@ export function valueAt(series: FinPoint[], periodEnd: string): number | null {
 
 // Aggregated value of a series for a chosen granularity bucket (e.g. "FY 25-26"
 // or "Jun 2026") — stock keeps the last value in the bucket, flow sums it.
-export function bucketValue(series: FinPoint[], kind: "stock" | "flow", view: TrendView, label: string): number | null {
+export function bucketValue(series: TimelineInput[], kind: "stock" | "flow", view: TrendView, label: string): number | null {
   const hit = buildTimeline(series, kind, view).find((x) => x.label === label);
   return hit ? hit.value : null;
 }
@@ -214,7 +229,7 @@ export function bucketLabelsOf(series: FinPoint[], kind: "stock" | "flow", view:
 // labelled "as at <date>" rather than by the bucket name, making clear a
 // quarter/year balance IS the period-end snapshot, not a sum. Taken from
 // buildTimeline so the date always belongs to the figure shown beside it.
-export function bucketEndDate(series: FinPoint[], view: TrendView, label: string): string | null {
+export function bucketEndDate(series: TimelineInput[], view: TrendView, label: string): string | null {
   return buildTimeline(series, "stock", view).find((x) => x.label === label)?.end ?? null;
 }
 
@@ -884,29 +899,163 @@ function ratioVerdict(lineKey: string, v: number): { status: "good" | "warn" | "
 }
 const RAG = { good: { c: SUCCESS_COLOR, bg: "#EDF4EE", t: "Healthy" }, warn: { c: "#B08400", bg: "#FBF3DD", t: "Watch" }, bad: { c: DANGER_COLOR, bg: "#F7E7E4", t: "Concern" } };
 
-// A ratio bucketed to the chosen period — ratios aren't summable, so we take
-// the latest ratio within the bucket (stock rule).
-function ratioAt(it: RatioItem, view: TrendView, bucket: string): number | null {
-  const tl = buildTimeline(it.series as unknown as FinPoint[], "stock", view);
-  const hit = tl.find((x) => x.label === bucket);
-  return hit ? hit.value : (tl.length ? tl[tl.length - 1].value : null);
+// ── A ratio's value for one bucket ──────────────────────────────────────────
+// Monthly: the sheet's own figure, as typed. A quarter or a year has no ratio in
+// the sheet, so a flow-based ratio is rebuilt from that bucket's own figures with
+// the sheet's formula (RatioDerive). The old rule — take the bucket's last month —
+// showed September's month-on-month Sales Growth as Q2's growth, and made the
+// three views read identically. Ratios with no recipe are balance-only (current,
+// quick, debt/equity): for those the period-end month IS the period-end figure,
+// so they keep the stock rule. `basis` is the line that says how the number was
+// made, or why there is none.
+export type RatioReading = { value: number | null; basis: string | null };
+
+const NO_READING: RatioReading = { value: null, basis: null };
+const FULL_MONTHS: Record<TrendView, number> = { monthly: 1, quarterly: 3, yearly: 12 };
+
+const flowAt = (inp: RatioInput, view: TrendView, label: string) =>
+  buildTimeline(inp.series, "flow", view).find((x) => x.label === label);
+
+// A bucket's position on its own axis, so "the previous quarter" is the one
+// immediately before — not merely the nearest one that happens to have data.
+function bucketOrdinal(end: string, view: TrendView): number {
+  const d = new Date(end);
+  const m = d.getUTCMonth() + 1;
+  if (view === "monthly") return d.getUTCFullYear() * 12 + m;
+  const fy = fyOf(d);
+  return view === "yearly" ? fy : fy * 4 + (m >= 4 ? Math.floor((m - 4) / 3) : 3);
+}
+
+const signedLabels = (terms: { sign: 1 | -1; label: string }[]) =>
+  terms.map((t, i) => (i === 0 ? "" : t.sign < 0 ? " − " : " + ") + t.label).join("");
+
+function derivedReading(d: RatioDerive, view: TrendView, label: string): RatioReading {
+  switch (d.kind) {
+    case "return": {
+      // Sheet: PBITDA × 12 ÷ balance — a month's profit annualised. A bucket
+      // annualises its own PBITDA by the months it covers (×12/3 for a quarter,
+      // ×12/12 for a full year), over the balance at the bucket's end.
+      const n = flowAt(d.num, view, label);
+      const parts = d.den.map((t) => bucketValue(t.series, "stock", view, label));
+      if (!n || parts.some((p) => p == null)) return NO_READING;
+      const den = parts.reduce<number>((s, p, i) => s + d.den[i].sign * (p as number), 0);
+      if (den === 0) return NO_READING;
+      const denLabel = d.den.length > 1 ? `(${signedLabels(d.den)})` : signedLabels(d.den);
+      const scale = n.months === 12 ? "" : ` ×12/${n.months}`;
+      return {
+        value: (n.value * 12) / n.months / den,
+        basis: `${d.num.label}${scale} ÷ ${denLabel} at ${fmtAsAt(bucketEndDate(d.den[0].series, view, label))}`,
+      };
+    }
+    case "flow_ratio": {
+      const n = flowAt(d.num, view, label);
+      const dd = flowAt(d.den, view, label);
+      if (!n || !dd || dd.value === 0) return NO_READING;
+      return { value: n.value / dd.value, basis: `${d.num.label} ÷ ${d.den.label} for the period` };
+    }
+    case "days": {
+      // Sheet: closing balance × 30 ÷ the month's sales or material cost. A
+      // bucket counts 30 days for each month it covers, as the sheet does.
+      let value = 0;
+      let days = 0;
+      for (const t of d.terms) {
+        const f = flowAt(t.flow, view, label);
+        const s = bucketValue(t.stock.series, "stock", view, label);
+        if (!f || s == null || f.value === 0) return NO_READING;
+        days = 30 * f.months;
+        value += (t.sign * s * days) / f.value;
+      }
+      const t0 = d.terms[0];
+      const basis = d.terms.length === 1
+        ? `Closing ${t0.stock.label} × ${days} days ÷ ${t0.flow.label}`
+        : `${signedLabels(d.terms.map((t) => ({ sign: t.sign, label: t.stock.label })))} days, each over ${days} days`;
+      return { value, basis };
+    }
+    case "growth": {
+      // Like-for-like only: a part-year against a full year would read as a
+      // collapse. Same positive-base rule as every other % change in the app.
+      const tl = buildTimeline(d.base.series, "flow", view);
+      const idx = tl.findIndex((x) => x.label === label);
+      if (idx < 0) return NO_READING;
+      const cur = tl[idx];
+      const full = FULL_MONTHS[view];
+      if (cur.months < full) return { value: null, basis: `${label} in progress (${cur.months} of ${full} months)` };
+      const prev = idx > 0 ? tl[idx - 1] : null;
+      if (!prev || bucketOrdinal(prev.end, view) !== bucketOrdinal(cur.end, view) - 1) {
+        return { value: null, basis: `No previous ${view === "yearly" ? "year" : "quarter"} to compare` };
+      }
+      if (prev.months < full) return { value: null, basis: `${prev.label} has only ${prev.months} of ${full} months` };
+      const { pct, reason } = computeDelta(cur.value, prev.value);
+      if (pct == null) {
+        return { value: null, basis: reason === "non_positive_base" ? `${prev.label} ${d.base.label} was zero or negative` : null };
+      }
+      return { value: pct / 100, basis: `${d.base.label}, ${label} vs ${prev.label}` };
+    }
+  }
+}
+
+export function ratioReading(it: RatioItem, view: TrendView, bucket: string): RatioReading {
+  if (view === "monthly" || !it.derive) {
+    const hit = buildTimeline(it.series, "stock", view).find((x) => x.label === bucket);
+    return { value: hit ? hit.value : null, basis: null };
+  }
+  return derivedReading(it.derive, view, bucket);
+}
+
+export function ratioAt(it: RatioItem, view: TrendView, bucket: string): number | null {
+  return ratioReading(it, view, bucket).value;
+}
+
+// The trend spark, on the same basis as the headline number.
+function ratioSpark(it: RatioItem, view: TrendView): number[] {
+  const d = it.derive;
+  if (view === "monthly" || !d) return buildTimeline(it.series, "stock", view).map((x) => x.value);
+  const axis = d.kind === "growth" ? d.base : d.kind === "days" ? d.terms[0].flow : d.num;
+  return buildTimeline(axis.series, "flow", view)
+    .map((p) => derivedReading(d, view, p.label).value)
+    .filter((v): v is number => v != null);
 }
 
 function RatioCard({ it, view, bucket }: { it: RatioItem; view: TrendView; bucket: string }) {
-  const spark = buildTimeline(it.series as unknown as FinPoint[], "stock", view).map((x) => x.value);
-  const latest = ratioAt(it, view, bucket);
-  const verdict = latest != null ? ratioVerdict(it.line_key, latest) : null;
+  const spark = ratioSpark(it, view);
+  const { value, basis } = ratioReading(it, view, bucket);
+  const verdict = value != null ? ratioVerdict(it.line_key, value) : null;
   return (
     <div className="bg-[#FCFBF8] border border-[#EAE3D6] rounded-xl p-3">
       <div className="flex items-start justify-between gap-2">
         <div className="text-[11px] font-semibold text-gray-500 truncate" title={it.line_label}>{it.line_label}</div>
         {verdict && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap" style={{ color: RAG[verdict.status].c, background: RAG[verdict.status].bg }}>{RAG[verdict.status].t}</span>}
       </div>
-      <div className="text-xl font-bold text-gray-800 mt-1">{latest != null ? formatRatio(it.line_label, latest) : "—"}</div>
+      <div className={`text-xl font-bold mt-1 ${value != null ? "text-gray-800" : "text-gray-400"}`}>{value != null ? formatRatio(it.line_label, value) : "—"}</div>
+      {basis && <div className="text-[10px] leading-snug text-gray-500 mt-0.5">{basis}</div>}
       <div className="flex items-center justify-between mt-1.5">
         <span className="text-[10px] text-gray-500">{verdict?.target ?? ""}</span>
         <Sparkline values={spark} width={52} height={16} color={verdict ? RAG[verdict.status].c : SOURCES_COLOR} />
       </div>
+    </div>
+  );
+}
+
+// Says on the page how a quarter/year ratio was made — it is not the sheet's
+// number, and the yearly file's own ratio cells will disagree with it.
+function RatioDerivationNote({ cats, view }: { cats: RatioCat[]; view: TrendView }) {
+  const items = cats.flatMap((c) => c.items);
+  const kinds = new Set(items.map((it) => it.derive?.kind).filter(Boolean));
+  if (view === "monthly" || kinds.size === 0) return null;
+  const period = view === "yearly" ? "year" : "quarter";
+  return (
+    <div className="rounded-xl bg-[#FCFBF8] border border-[#EAE3D6] px-3 py-2 mb-3">
+      <p className="text-[11px] leading-relaxed text-gray-500">
+        The sheet gives these ratios month by month, so a {period}'s figure is worked out from that {period}'s own numbers with the sheet's formulas (switch to Monthly for the sheet's own values).
+        {kinds.has("return") && " Returns: the period's PBITDA scaled to a full year (×12 ÷ months covered) over the balance at period end."}
+        {kinds.has("days") && " Turnover days: closing balance × 30 days per month covered ÷ the period's sales or material cost."}
+        {kinds.has("flow_ratio") && " Debts Covering: the period's PBITDA ÷ its finance cost."}
+        {kinds.has("growth") && ` Growth: against the previous ${period}, shown only when both are complete.`}
+        {items.some((it) => !it.derive) && " Balance ratios (current, quick, debt/equity) are as at period end."}
+        {view === "yearly" && (kinds.has("return") || kinds.has("days"))
+          && items.some((it) => it.series.some((p) => p.period_type === "annual")) &&
+          " The yearly file's own ratio cells reuse the monthly ×12 / ×30 on full-year figures, so they are not used here."}
+      </p>
     </div>
   );
 }
@@ -917,6 +1066,7 @@ export function RatiosPanel({ ratios, view, bucket, title = "Key Financial Ratio
   if (cats.length === 0) return null;
   return (
     <Card title={title} note={`Value at ${bucket} vs a healthy benchmark (Healthy / Watch / Concern), with its trend spark.`}>
+      <RatioDerivationNote cats={cats} view={view} />
       <div className="flex flex-col gap-4">
         {cats.map((cat) => (
           <div key={cat.key}>

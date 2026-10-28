@@ -61,3 +61,57 @@ def test_balance_sheet_subheaders_still_group():
     ]
     records, _ = parse_finance_tab(grid, "X")
     assert _keys(records) == {"balance_sheet/sources_of_funds/reserves", "balance_sheet/sources_of_funds/total"}
+
+
+def _grid(rows, period="2025-26"):
+    return [[None, "COMPANY'S NAME", "X"], ["S.No.", "Particulars", period, "%"], *rows]
+
+
+def test_all_div0_ratio_does_not_regroup_the_ratios_below():
+    # AV ENT, Oct 2026: Debts Covering Ratio was #DIV/0! every month and hid ROCE.
+    div0 = "#DIV/0! (Function DIVIDE parameter 2 cannot be zero.)"
+    records, _ = parse_finance_tab(_grid([
+        [6, "RATIOS"],
+        [None, "SOLVENCY RATIO"],
+        [None, "Debt/Equity Ratio", 1.2],
+        [None, "Debts Covering Ratio", div0],
+        [None, "Return on Capital Employed", 0.2],
+        [None, "PROFITABILITY RATIO"],
+        [None, "Return on Investment", 0.1],
+    ]), "AV ENT")
+    keys = _keys(records)
+    assert "ratios/solvency_ratio/return_on_capital_employed" in keys
+    assert "ratios/profitability_ratio/return_on_investment" in keys
+
+
+def test_blank_production_cost_row_keeps_the_section_flat():
+    records, _ = parse_finance_tab(_grid([
+        [9, "PRODUCTION COST"],
+        [None, "Cost of Material", 100, 0.5],
+        [None, "Add: Change in FG Stock"],
+        [None, "Net Production Cost", 90, 0.45],
+    ]), "YSA")
+    assert "production_cost/net_production_cost" in _keys(records)
+    assert all(r["sub_section"] is None for r in records)
+
+
+def test_yearly_spellings_join_the_monthly_lines():
+    records, _ = parse_finance_tab(_grid([
+        [2, "Profit & Loss A/c"],
+        [None, "Job work Recipets", 10, 0.01],
+        [None, "Direct Cost", 20, 0.02],
+    ]), "AMATO TOTAL")
+    by_key = {r["line_key"]: r["line_label"] for r in records}
+    assert by_key == {"profit_loss_a_c/direct_income": "Direct Income",
+                      "profit_loss_a_c/direct_expenses": "Direct Expenses"}
+
+
+def test_plain_sales_block_is_the_four_wheeler_block():
+    records, _ = parse_finance_tab(_grid([
+        [7, "UNITS"],
+        [None, "Sales"],
+        [None, "Seat Cover", 100],
+        [None, "Sales 2w"],
+        [None, "Seat Cover", 5],
+    ]), "AMATO TOTAL")
+    assert _keys(records) == {"units/sales_4w/seat_cover", "units/sales_2w/seat_cover"}

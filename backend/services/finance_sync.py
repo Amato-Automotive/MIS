@@ -108,10 +108,23 @@ def _cf_norm(label: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", label.lower()).strip()
 
 
-# The Balance Sheet's only genuine sub-headers (normalized). Any OTHER value-less
-# row in the balance-sheet section is a blank line item, not a sub-header — see
-# the guard in parse_finance_tab for why this matters.
-_BS_SUBHEADERS = {"sources of funds", "application of funds"}
+# The only labels allowed to open a sub-section, per section (normalized). A
+# value-less row used to count as a sub-header by itself, and a real line item
+# that is merely blank — or #DIV/0! — in every loaded period then re-filed every
+# row below it under its own name. It bit the Balance Sheet (blank Share
+# Capital), the P&L (blank Provision for Expenses), Ratios (AV ENT's all-#DIV/0!
+# Debts Covering Ratio hid ROCE), Production Cost (blank "Add: Change in FG
+# Stock" in YSA, AV ENT and every yearly tab) and WC Aging (blank "> 90 Days").
+# So headings are listed, not guessed: these are every heading in both masters
+# as of Oct 2026. A section not listed here is flat. A NEW heading finance adds
+# must be added here, or its rows simply stay in the current group.
+_SUBHEADERS = {
+    "balance_sheet": {"sources of funds", "application of funds"},
+    "working_capital": {"current assets", "current liabilities"},
+    "ratios": {"liquidity ratio", "eficiency ratio", "efficiency ratio", "solvency ratio",
+               "profitability ratio", "growth ratio"},
+    "working_capital_aging": {"inventory", "debtors", "creditors"},
+}
 
 # ── §7 UNITS — structural grouping ───────────────────────────────────────────
 # The sheet lays this section out as four blocks (Sales 4w / Sales 2w /
@@ -132,6 +145,22 @@ _BS_SUBHEADERS = {"sources of funds", "application of funds"}
 #      AMATO RPS / PUNE / NOIDA: real figures filed under units/mats/other and
 #      units/seat_cover/...). Same class of bug as the balance-sheet sub-header
 #      hijack. Fix is the same shape: only STRUCTURAL labels may change grouping.
+# One template row, two spellings. The monthly and yearly masters (and AMATO
+# TOTAL against the other tabs) name a few rows differently — same template
+# position, different label — and a line's key is its label's slug, so the
+# yearly history and the monthly figures landed on two separate lines that
+# never joined up. Each spelling maps to the monthly master's key and label.
+# Checked by row position, Oct 2026: P&L row 12 is "Direct Income" monthly and
+# "Job work Recipets"/"Job work Reciepts" yearly; row 14 "Direct Expenses" vs
+# "Direct Cost"; Production Cost "Less: FG Trading Cost" (AMATO TOTAL) is every
+# other tab's "Less: FG Purchase".
+_KEY_ALIASES = {
+    ("profit_loss_a_c", "job_work_recipets"): ("direct_income", "Direct Income"),
+    ("profit_loss_a_c", "job_work_reciepts"): ("direct_income", "Direct Income"),
+    ("profit_loss_a_c", "direct_cost"): ("direct_expenses", "Direct Expenses"),
+    ("production_cost", "less_fg_trading_cost"): ("less_fg_purchase", "Less: FG Purchase"),
+}
+
 _UNITS_SEGMENT_RE = re.compile(r"^(sales|production|productions)(\s+(4w|2w))?$")
 _UNITS_GROUPS = {"others"}
 
@@ -289,7 +318,10 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
         base = section_key
         if sub_section:
             base = f"{base}/{sub_section}"
-        line_key = f"{base}/{_slugify(label)}"
+        slug = _slugify(label)
+        if (section_key, slug) in _KEY_ALIASES:
+            slug, label = _KEY_ALIASES[(section_key, slug)]
+        line_key = f"{base}/{slug}"
         for amount_col, percent_col, cadence, p_start, p_end, p_type in period_cols:
             amount = _to_number(_cell(grid, r, amount_col))
             if amount is None:
@@ -372,7 +404,11 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
             # see the _UNITS_* block above for the two bugs this prevents.
             n = _cf_norm(label)
             if _UNITS_SEGMENT_RE.match(n):
-                units_segment = _slugify(label)
+                # AMATO TOTAL heads its 4-wheeler block plain "Sales" where every
+                # other tab says "Sales 4w", and "Production" vs "Productions"
+                # varies too — one key per block, whatever the spelling.
+                kind, _, wheels = n.partition(" ")
+                units_segment = f"{'sales' if kind == 'sales' else 'productions'}_{wheels or '4w'}"
                 sub_section = units_segment
             elif n in _UNITS_GROUPS and units_segment:
                 sub_section = f"{units_segment}/{_slugify(label)}"
@@ -380,25 +416,10 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
             # current grouping rather than hijacking it.
             continue
         elif not any_cell:
-            # A value-less labelled row is normally a sub-header. Guard: some
-            # sections have real line items that are blank in every loaded period
-            # (e.g. a company with no Share Capital / OD-CC balance this year).
-            # Those must NOT be mistaken for sub-headers — doing so hijacks the
-            # sub_section and mis-files the section's Total (observed on Balance
-            # Sheet company tabs: Sources of Funds ended up under `share_capital`
-            # / `od_cc_balance`, leaving the Sources KPI empty). For the balance
-            # sheet, only its two real sub-headers may set the grouping; any other
-            # blank row is just an empty line item and keeps the current grouping.
-            if section_key == "balance_sheet" and _cf_norm(label) not in _BS_SUBHEADERS:
-                continue
-            # The P&L is one flat run (Sales → … → PAT) with no sub-headers at all.
-            # A blank "Provision for Expenses" used to become one, re-filing
-            # PBITDA…PAT under profit_loss_a_c/provision_for_expenses/* — a second,
-            # empty PBITDA…PAT block in the detail table, and the bridge/KPIs
-            # (which look for profit_loss_a_c/pbitda) lost those periods.
-            if section_key == "profit_loss_a_c":
-                continue
-            sub_section = _slugify(label)  # sub-header — context only, not stored
+            # Only a listed heading regroups (see _SUBHEADERS); any other
+            # value-less row is a blank line item and keeps the current grouping.
+            if _cf_norm(label) in _SUBHEADERS.get(section_key, ()):
+                sub_section = _slugify(label)  # sub-header — context only, not stored
         else:
             emit(label, "line_item")
 

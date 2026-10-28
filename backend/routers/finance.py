@@ -814,9 +814,10 @@ def finance_analytics(
 # sheet_sources as ordinary companies, so summing every tab would double-count
 # whichever entities those roll-ups already cover.
 #
-# P&L lines come back as full series so the frontend's period picker can bucket
-# them at monthly/quarterly/yearly like every other view. Balance Sheet is a
-# stock, so only its latest point travels — "last figures", as at its own date.
+# Every line comes back as a full series so the frontend's period picker can
+# bucket it at monthly/quarterly/yearly like every other view: flows (P&L, sales
+# channels) sum within a bucket, stocks (Balance Sheet, Working Capital) take the
+# bucket's closing month. Every panel on the page follows the picker.
 _CONSOLIDATED_PL_KEYS = {
     "sales": "profit_loss_a_c/sales_accounts",
     "gross": "profit_loss_a_c/gross_margin",
@@ -827,6 +828,37 @@ _CONSOLIDATED_BS_KEYS = {
     "sources": "balance_sheet/sources_of_funds/total",
     "application": "balance_sheet/application_of_funds/total",
 }
+_CONSOLIDATED_WC_KEYS = {
+    "cash": "working_capital/current_assets/cash_bank_balance",
+    "inventory": "working_capital/current_assets/inventory",
+    "debtors": "working_capital/current_assets/sundry_debtors",
+    "current_assets": "working_capital/current_assets/total",
+    "creditors": "working_capital/current_liabilities/sundry_creditors",
+    "current_liabilities": "working_capital/current_liabilities/total",
+    "nwc": "working_capital/net_working_capital",
+}
+
+
+def _sales_channels(rows: list) -> tuple:
+    """§1 Sales Accounts rows for ONE company → (channels, total series).
+
+    Channels are the section's line items ABOVE its Total; anything listed after
+    the Total (Branch Purchase) is not a sale. Read from the sheet's own order
+    rather than a fixed list, so a channel finance adds later shows up on its own.
+    """
+    total_no = min((r.item_no for r in rows if r.entity_type == "total"), default=None)
+    total, channels = [], {}
+    for r in rows:
+        point = {"period_end_date": r.period_end_date.isoformat(), "period_type": r.period_type,
+                 "amount": float(r.amount), "percent": r.percent}
+        if r.entity_type == "total":
+            total.append(point)
+        elif total_no is not None and r.item_no is not None and r.item_no < total_no:
+            ch = channels.setdefault(r.line_key, {"key": r.line_key.rsplit("/", 1)[-1], "label": r.line_label,
+                                                   "item_no": r.item_no, "series": []})
+            ch["item_no"] = min(ch["item_no"], r.item_no)
+            ch["series"].append(point)
+    return sorted(channels.values(), key=lambda c: c["item_no"]), total
 
 
 @router.get("/consolidated")
@@ -844,60 +876,74 @@ def finance_consolidated(db: Session = Depends(get_db), current_user: User = Dep
         return {"companies": []}
 
     sids = [str(c.id) for c in companies]
-    keys = list(_CONSOLIDATED_PL_KEYS.values()) + list(_CONSOLIDATED_BS_KEYS.values())
+    named = {"pl": _CONSOLIDATED_PL_KEYS, "bs": _CONSOLIDATED_BS_KEYS, "wc": _CONSOLIDATED_WC_KEYS}
+    slot_of = {key: (block, name) for block, keys in named.items() for name, key in keys.items()}
     # One pass for every company rather than a query per company. sheet_source_id
     # is a uuid column and these are strings, so this uses the same expanding
     # bindparam / IN form already proven against it in _sync_company_records
     # rather than an ANY(...) array cast.
     rows = db.execute(
         text("""
-            SELECT sheet_source_id, line_key, period_start_date, period_end_date,
-                   period_type, amount, percent
+            SELECT sheet_source_id, section_key, entity_type, item_no, line_key, line_label,
+                   period_start_date, period_end_date, period_type, amount, percent
             FROM finance_lines
             WHERE sheet_source_id IN :sids
-              AND line_key = ANY(:keys)
+              AND (line_key = ANY(:keys) OR section_key = 'sales_accounts')
               AND amount IS NOT NULL
             ORDER BY period_end_date
         """).bindparams(bindparam("sids", expanding=True)),
-        {"sids": sids, "keys": keys},
+        {"sids": sids, "keys": list(slot_of)},
     ).fetchall()
 
-    pl_by_key = {v: k for k, v in _CONSOLIDATED_PL_KEYS.items()}
-    bs_by_key = {v: k for k, v in _CONSOLIDATED_BS_KEYS.items()}
-    acc: dict = {
-        sid: {"pl": {k: [] for k in _CONSOLIDATED_PL_KEYS}, "bs": {k: None for k in _CONSOLIDATED_BS_KEYS}}
-        for sid in sids
-    }
+    acc: dict = {}
+    for sid in sids:
+        acc[sid] = {block: {name: [] for name in keys} for block, keys in named.items()}
+        acc[sid]["sales_rows"] = []
     for r in rows:
-        sid = str(r.sheet_source_id)
-        slot = acc.get(sid)
+        slot = acc.get(str(r.sheet_source_id))
         if slot is None:
             continue
-        if r.line_key in pl_by_key:
-            slot["pl"][pl_by_key[r.line_key]].append({
+        if r.section_key == "sales_accounts":
+            slot["sales_rows"].append(r)
+        if r.line_key in slot_of:
+            block, name = slot_of[r.line_key]
+            slot[block][name].append({
                 "period_start_date": r.period_start_date.isoformat(),
                 "period_end_date": r.period_end_date.isoformat(),
                 "period_type": r.period_type,
                 "amount": float(r.amount),
                 "percent": r.percent,
             })
-        elif r.line_key in bs_by_key:
-            # Rows arrive oldest-first, so the last one seen is the latest point.
-            slot["bs"][bs_by_key[r.line_key]] = {
-                "amount": float(r.amount),
-                "period_end_date": r.period_end_date.isoformat(),
-            }
 
     out = []
     for c in companies:
         sid = str(c.id)
-        bs = acc[sid]["bs"]
-        as_at = max(
-            (v["period_end_date"] for v in bs.values() if v is not None),
-            default=None,
-        )
-        out.append({"id": sid, "label": c.label, "pl": acc[sid]["pl"], "bs": bs, "as_at": as_at})
+        channels, sales_total = _sales_channels(acc[sid]["sales_rows"])
+        out.append({
+            "id": sid, "label": c.label,
+            # The sheet tab's own name ("AMATO SRN") — the company key is its slug.
+            # Display names can be renamed to full legal names that no chart axis
+            # or column header can hold; the tab name is short and finance's own.
+            "short_label": c.sheet_id.replace("_", " ").upper(),
+            "pl": acc[sid]["pl"], "bs": acc[sid]["bs"], "wc": acc[sid]["wc"],
+            "sales_channels": channels, "sales_total": sales_total,
+            # Each company's own ratio recipes, so the scorecard reads a quarter or
+            # year exactly as the company's own Balance Sheet / P&L tabs do.
+            "ratios": _collect_ratios(db, sid, BS_RATIO_SUBS + PL_RATIO_SUBS),
+            "budget": _company_pnl_budget(db, sid),
+        })
     return {"companies": out}
+
+
+def _company_pnl_budget(db: Session, sid: str):
+    """The P&L part of a company's Budget block with each line's actual, or None
+    for a company whose sheet has no budget (most of them, Oct 2026)."""
+    groups, _ = _collect_groups(db, sid, BUDGET_SECTIONS)
+    pnl = [sub for g in groups for sub in g["sub_sections"] if sub["key"] == "pnl"]
+    if not pnl:
+        return None
+    pnl_only = [{"sub_sections": pnl}]
+    return {"lines": pnl[0]["line_items"], "actuals": _budget_actuals(db, sid, pnl_only)}
 
 
 # ── Sync history ──────────────────────────────────────────────────────────────

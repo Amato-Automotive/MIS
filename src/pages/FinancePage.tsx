@@ -313,8 +313,8 @@ export default function FinancePage() {
             <div className="w-4 h-0.5 rounded" style={{ background: "#f46617" }} />
             <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
               {isConsolidated
-                ? "Profit & Loss and Balance Sheet, every company side by side"
-                : "Balance Sheet · Profit & Loss · Cash Flow · Plant Operations, per company"}
+                ? "P&L · Budget · Sales · Balance Sheet · Working Capital · Ratios, every company side by side"
+                : "Balance Sheet · Profit & Loss · Cash Flow · Plant Operations · Budget · Unit Economics, per company"}
             </p>
           </div>
         </div>

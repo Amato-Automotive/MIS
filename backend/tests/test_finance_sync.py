@@ -63,6 +63,45 @@ def test_balance_sheet_subheaders_still_group():
     assert _keys(records) == {"balance_sheet/sources_of_funds/reserves", "balance_sheet/sources_of_funds/total"}
 
 
+def _cash_flow_then_blocks():
+    """§11 Cash Flow, then finance's unnumbered Budget / Unit Economics blocks
+    (AMATO RPS / SRN, Oct 2026). Two products repeat the same metric labels."""
+    return [
+        [None, "COMPANY'S NAME", "AMATO SRN"],
+        ["S.No.", "Particulars", "2025-26", "%"],
+        [11, "Cash Flow Statement"],
+        [None, "(C) NET CASH FROM / (USED IN) FINANCING ACTIVITIES", -5],
+        [None, "CLOSING CASH & CASH EQUIVALENTS", 90],
+        [None, "BUDGET /ACTUAL/VARIANCE"],
+        [None, "Revanue/Income", 1000, 1],
+        [None, "PAT", 60, 0.06],
+        [None, "BUDGET SALE UNITS"],
+        [None, "4w Seat Cover", 10000],
+        [None, "2w Seat Cover"],
+        [None, "UNIT ECONOMICS"],
+        [None, "Metrics of Seat Covers"],
+        [None, "Unit Sold", 5000],
+        [None, "Average Product Cost", "#DIV/0! (Function DIVIDE parameter 2 cannot be zero.)"],
+        [None, "Metrics of Mat"],
+        [None, "Unit Sold", 2000],
+    ]
+
+
+def test_unnumbered_budget_and_unit_economics_blocks_get_their_own_sections():
+    records, errors = parse_finance_tab(_cash_flow_then_blocks(), "AMATO SRN")
+    assert not errors
+    by_key = {r["line_key"]: r["amount"] for r in records}
+    # Nothing from the blocks lands in Cash Flow's reconciliation any more.
+    assert not any(k.startswith("cash_flow_statement/reconciliation/") and "closing_cash" not in k for k in by_key)
+    assert by_key["budget/pnl/revanue_income"] == 1000
+    assert by_key["budget/units/4w_seat_cover"] == 10000
+    assert "budget/units/2w_seat_cover" not in by_key        # blank row: absent, not zero
+    # Same label under two products stays two lines rather than overwriting.
+    assert by_key["unit_economics/seat_covers/unit_sold"] == 5000
+    assert by_key["unit_economics/mat/unit_sold"] == 2000
+    assert "unit_economics/seat_covers/average_product_cost" not in by_key  # #DIV/0! is absent
+
+
 def _grid(rows, period="2025-26"):
     return [[None, "COMPANY'S NAME", "X"], ["S.No.", "Particulars", period, "%"], *rows]
 

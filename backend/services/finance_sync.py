@@ -72,6 +72,10 @@ REGISTERED_SECTIONS = {
     # for why the generic sub-header/total heuristics don't fit a cash flow
     # statement). Registering it here only gates it in; the dispatch is explicit.
     "cash_flow_statement",
+    # Budget + Unit Economics — unnumbered blocks below Cash Flow; started by
+    # their headings (_BLOCK_HEADINGS), not by a section number.
+    "budget",
+    "unit_economics",
 }
 
 
@@ -145,6 +149,21 @@ _SUBHEADERS = {
 #      AMATO RPS / PUNE / NOIDA: real figures filed under units/mats/other and
 #      units/seat_cover/...). Same class of bug as the balance-sheet sub-header
 #      hijack. Fix is the same shape: only STRUCTURAL labels may change grouping.
+# ── Budget / Unit Economics — unnumbered blocks ──────────────────────────────
+# Finance added these below §11 Cash Flow without a section number (first in
+# AMATO RPS and SRN, Oct 2026). Without a number the generic walk saw no new
+# section and filed every row under Cash Flow's reconciliation — four product
+# blocks with identical labels then overwrote each other. So these headings
+# open a section themselves. Budget's three blocks become sub-sections of one
+# section; Unit Economics opens one sub-section per "Metrics of <product>".
+_BLOCK_HEADINGS = {
+    "budget actual variance": ("budget", "Budget", "pnl"),
+    "budget cash flow": ("budget", "Budget", "cash_flow"),
+    "budget sale units": ("budget", "Budget", "units"),
+    "unit economics": ("unit_economics", "Unit Economics", None),
+}
+_UE_PRODUCT_RE = re.compile(r"^\s*metrics\s+of\s+(.+?)\s*$", re.IGNORECASE)
+
 # One template row, two spellings. The monthly and yearly masters (and AMATO
 # TOTAL against the other tabs) name a few rows differently — same template
 # position, different label — and a line's key is its label's slug, so the
@@ -341,6 +360,16 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
         a = _to_item_no(_cell(grid, r, ITEM_COL))
         b = _cell(grid, r, LABEL_COL)
 
+        block = _BLOCK_HEADINGS.get(_cf_norm(b)) if a is None and isinstance(b, str) else None
+        if block:
+            key, block_label, sub = block
+            if key != section_key:
+                ordinal = 0  # Budget's three blocks share one section and one ordinal run
+            section_key, section_label, sub_section = key, block_label, sub
+            registered = True
+            units_segment = None
+            continue
+
         # A numbered row with a title starts a new section.
         if a is not None and isinstance(b, str) and b.strip():
             section_label = b.strip()
@@ -359,6 +388,20 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
         label = str(b).strip() if isinstance(b, str) and b.strip() else None
         if label is None:
             continue  # blank separator / spacer row
+
+        # Budget / Unit Economics: every labelled row is a line item (a month the
+        # sheet leaves blank or #DIV/0! simply emits nothing); a product heading
+        # switches Unit Economics' sub-section.
+        if section_key == "budget":
+            emit(label, "line_item")
+            continue
+        if section_key == "unit_economics":
+            product = _UE_PRODUCT_RE.match(label)
+            if product:
+                sub_section = _slugify(product.group(1))
+            elif sub_section:
+                emit(label, "line_item")
+            continue
 
         # §15 Cash Flow Statement — classified by label structure, not by value
         # presence (see the _CF_* block above). sub_section carries the current

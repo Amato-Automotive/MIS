@@ -9,6 +9,8 @@ import Select from "@/components/ui/Select";
 import BalanceSheetView from "@/pages/finance/BalanceSheetView";
 import ProfitLossView from "@/pages/finance/ProfitLossView";
 import PlantOpsView from "@/pages/finance/PlantOpsView";
+import BudgetView from "@/pages/finance/BudgetView";
+import UnitEconomicsView from "@/pages/finance/UnitEconomicsView";
 import CashFlowView from "@/pages/finance/CashFlowView";
 import ConsolidatedView from "@/pages/finance/ConsolidatedView";
 import { StickyLeadingContext } from "@/pages/finance/dashboardKit";
@@ -34,7 +36,7 @@ interface SyncHistoryItem {
   id: string; rows_total: number; rows_inserted: number; rows_updated: number;
   rows_failed: number; rows_deleted: number; status: string; synced_at: string;
 }
-type Statement = "balance_sheet" | "profit_loss" | "plant_ops" | "cash_flow";
+type Statement = "balance_sheet" | "profit_loss" | "plant_ops" | "cash_flow" | "budget" | "unit_economics";
 type Tab = Statement | "sheets";
 
 export default function FinancePage() {
@@ -248,7 +250,8 @@ export default function FinancePage() {
   const companyLabel = isConsolidated ? "ALL COMPANIES" : (sources.find((s) => s.id === selectedId)?.label ?? "");
   const statementLabel = isConsolidated
     ? "P&L & Balance Sheet"
-    : activeTab === "balance_sheet" ? "Balance Sheet" : activeTab === "profit_loss" ? "Profit & Loss" : activeTab === "cash_flow" ? "Cash Flow" : "Plant Operations";
+    : activeTab === "balance_sheet" ? "Balance Sheet" : activeTab === "profit_loss" ? "Profit & Loss" : activeTab === "cash_flow" ? "Cash Flow"
+    : activeTab === "budget" ? "Budget" : activeTab === "unit_economics" ? "Unit Economics" : "Plant Operations";
   const onSheetsTab = activeTab === "sheets";
 
   // Pinned above the individual companies — it reads as the overview you drill
@@ -272,7 +275,7 @@ export default function FinancePage() {
     />
   );
 
-  // The four statement tabs are per-company, so they don't apply to the
+  // The statement tabs are per-company, so they don't apply to the
   // consolidated view — which shows P&L and Balance Sheet together on one page.
   // Sheets stays reachable either way, being config rather than a company view.
   const TABS: [Tab, string][] = [
@@ -281,6 +284,8 @@ export default function FinancePage() {
       ["profit_loss", "P&L"],
       ["cash_flow", "Cash Flow"],
       ["plant_ops", "Plant Ops"],
+      ["budget", "Budget"],
+      ["unit_economics", "Unit Economics"],
     ] as [Tab, string][])),
     // Key stays "sheets"; the label reads "Data Sources" so the tab matches the
     // heading inside it and doesn't surface the Google-Sheets plumbing.
@@ -481,6 +486,8 @@ export default function FinancePage() {
         {!isConsolidated && selectedId && activeTab === "profit_loss" && <ProfitLossView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
         {!isConsolidated && selectedId && activeTab === "cash_flow" && <CashFlowView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
         {!isConsolidated && selectedId && activeTab === "plant_ops" && <PlantOpsView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+        {!isConsolidated && selectedId && activeTab === "budget" && <BudgetView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
+        {!isConsolidated && selectedId && activeTab === "unit_economics" && <UnitEconomicsView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
       </StickyLeadingContext.Provider>
 
       {isAdmin && onSheetsTab && (

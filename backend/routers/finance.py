@@ -36,6 +36,8 @@ BALANCE_SHEET_SECTIONS = ["balance_sheet", "inventories", "working_capital", "wo
 PROFIT_LOSS_SECTIONS = ["sales_accounts", "profit_loss_a_c", "production_cost", "employee_s_cost"]
 PLANT_OPS_SECTIONS = ["units", "average_unit_cost"]
 CASH_FLOW_SECTIONS = ["cash_flow_statement"]
+BUDGET_SECTIONS = ["budget"]
+UNIT_ECONOMICS_SECTIONS = ["unit_economics"]
 
 # Key Financial Ratios (section "ratios") split across the two statement tabs by
 # their category sub-section. Balance-sheet-driven ratios on the BS tab;
@@ -49,6 +51,8 @@ _RATIO_SUB_LABELS = {
 
 # Human labels for the sub-section slugs the parser emits.
 _SUB_LABELS = {
+    # Budget's three blocks
+    "pnl": "Profit & Loss Budget", "cash_flow": "Cash Flow Budget", "units": "Sale Units Budget",
     "sources_of_funds": "Sources of Funds",
     "application_of_funds": "Application of Funds",
     "current_assets": "Current Assets",
@@ -687,10 +691,98 @@ def _cash_flow_analytics(db: Session, sid: str) -> dict:
     return {"statement": "cash_flow", "kind": "flow", "kpis": {}, "groups": groups, "periods": periods}
 
 
+# ── Budget: the actual that each budget line is measured against ─────────────
+# Finance's Budget block carries budget figures only, so the actual side comes
+# from what the sheet already reports (agreed with the user, Oct 2026). Each
+# budget line (matched by its label's slug) maps to the P&L / Cash Flow / Units
+# rows that make up its actual. Sums are of the sheet's own rows — a line the
+# sheet doesn't report for a month simply doesn't add — and `need_all` lines
+# (a difference, like PBIT) show nothing unless every part is there.
+_BUDGET_ACTUALS = {
+    "revanue_income": ("Sales Accounts", [(1, "profit_loss_a_c/sales_accounts")], False),
+    "revenue_income": ("Sales Accounts", [(1, "profit_loss_a_c/sales_accounts")], False),
+    "cost_of_goods_sold": ("Cost of Material + Direct Expenses",
+                           [(1, "profit_loss_a_c/cost_of_material"), (1, "profit_loss_a_c/direct_expenses")], False),
+    "gross_profit": ("Gross Margin", [(1, "profit_loss_a_c/gross_margin")], False),
+    "operating_cost": ("Indirect Expenses + Employee's Cost + Provision for Expenses",
+                       [(1, "profit_loss_a_c/indirect_expenses"), (1, "profit_loss_a_c/employee_s_cost"),
+                        (1, "profit_loss_a_c/provision_for_expenses")], False),
+    "pbitda": ("PBITDA", [(1, "profit_loss_a_c/pbitda")], False),
+    "pbit": ("PBITDA − Depreciation", [(1, "profit_loss_a_c/pbitda"), (-1, "profit_loss_a_c/depericiation")], True),
+    "pat": ("PAT", [(1, "profit_loss_a_c/pat")], False),
+    "opening_cash_bank": ("Opening cash (Cash Flow)",
+                          [(1, "cash_flow_statement/reconciliation/add_opening_cash_cash_equivalents")], False),
+    "closing_cash_bank": ("Closing cash (Cash Flow)",
+                          [(1, "cash_flow_statement/reconciliation/closing_cash_cash_equivalents")], False),
+}
+# Budgeted units → §7 actual sales units.
+_UNIT_ACTUALS = {
+    "4w_seat_cover": ["units/sales_4w/seat_cover"],
+    "4w_accessories": ["units/sales_4w/accessories"],
+    "4w_mats": ["units/sales_4w/mats"],
+    "4w_other": ["units/sales_4w/other"],
+    "2w_seat_cover": ["units/sales_2w/seat_cover"],
+    "2w_accessories": ["units/sales_2w/accessories"],
+    "lifestyle": ["units/sales_2w/others/lifestyle"],
+    "bags": ["units/sales_2w/others/bags"],
+}
+for _slug, _keys in _UNIT_ACTUALS.items():
+    _BUDGET_ACTUALS[_slug] = ("Sales units (§7 Units)", [(1, k) for k in _keys], False)
+
+
+def _budget_actuals(db: Session, sid: str, groups: list) -> dict:
+    """{budget line_key: {"basis": str, "series": [point]}} for every budget line
+    that has a known actual."""
+    wanted = {}
+    for g in groups:
+        for sub in g["sub_sections"]:
+            for it in sub["line_items"]:
+                spec = _BUDGET_ACTUALS.get(it["line_key"].rsplit("/", 1)[-1])
+                if spec:
+                    wanted[it["line_key"]] = spec
+    keys = sorted({k for _, terms, _ in wanted.values() for _, k in terms})
+    if not keys:
+        return {}
+    by_key: dict = {}
+    for r in db.execute(text("""
+        SELECT line_key, period_start_date, period_end_date, period_type, amount
+        FROM finance_lines
+        WHERE sheet_source_id = :sid AND line_key = ANY(:keys) AND amount IS NOT NULL
+    """), {"sid": sid, "keys": keys}).fetchall():
+        by_key.setdefault(r.line_key, {})[(r.period_start_date, r.period_end_date, r.period_type)] = float(r.amount)
+
+    out = {}
+    for budget_key, (basis, terms, need_all) in wanted.items():
+        periods = set().union(*(by_key.get(k, {}).keys() for _, k in terms))
+        series = []
+        for ps, pe, pt in sorted(periods, key=lambda p: p[1]):
+            parts = [(sign, by_key.get(k, {}).get((ps, pe, pt))) for sign, k in terms]
+            present = [(sign, v) for sign, v in parts if v is not None]
+            if not present or (need_all and len(present) < len(parts)):
+                continue
+            series.append({"period_start_date": ps.isoformat(), "period_end_date": pe.isoformat(),
+                           "period_type": pt, "amount": sum(sign * v for sign, v in present), "percent": None})
+        out[budget_key] = {"basis": basis, "series": series}
+    return out
+
+
+def _budget_analytics(db: Session, sid: str) -> dict:
+    groups, periods = _collect_groups(db, sid, BUDGET_SECTIONS)
+    return {"statement": "budget", "kind": "flow", "kpis": {}, "groups": groups, "periods": periods,
+            "actuals": _budget_actuals(db, sid, groups)}
+
+
+def _unit_economics_analytics(db: Session, sid: str) -> dict:
+    # Per-unit rates (price, cost, profit) are not summable; the frontend works a
+    # quarter or year out from the summed volumes and money (revenue ÷ units).
+    groups, periods = _collect_groups(db, sid, UNIT_ECONOMICS_SECTIONS)
+    return {"statement": "unit_economics", "kind": "flow", "kpis": {}, "groups": groups, "periods": periods}
+
+
 @router.get("/analytics")
 def finance_analytics(
     sheet_source_id: str = Query(...),
-    statement: str = Query(..., pattern="^(balance_sheet|profit_loss|plant_ops|cash_flow)$"),
+    statement: str = Query(..., pattern="^(balance_sheet|profit_loss|plant_ops|cash_flow|budget|unit_economics)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -707,6 +799,10 @@ def finance_analytics(
         return _plant_ops_analytics(db, sheet_source_id)
     if statement == "cash_flow":
         return _cash_flow_analytics(db, sheet_source_id)
+    if statement == "budget":
+        return _budget_analytics(db, sheet_source_id)
+    if statement == "unit_economics":
+        return _unit_economics_analytics(db, sheet_source_id)
     return _profit_loss_analytics(db, sheet_source_id)
 
 

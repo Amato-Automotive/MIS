@@ -187,7 +187,7 @@ export function bucketValue(series: TimelineInput[], kind: "stock" | "flow", vie
 
 // The bucket label a single point falls under — mirrors buildTimeline's own
 // grouping so a point's percent lands on the same bucket as its value.
-function pointBucketLabel(p: FinPoint, view: TrendView): string {
+export function pointBucketLabel(p: TimelineInput, view: TrendView): string {
   if (view === "monthly") return periodLabel(p);
   const d = new Date(p.period_end_date);
   const y = d.getUTCFullYear();
@@ -221,7 +221,7 @@ export function bucketPercent(series: FinPoint[], view: TrendView, label: string
 
 // The ordered bucket labels a series produces at a given granularity — used to
 // populate the one universal period picker per tab.
-export function bucketLabelsOf(series: FinPoint[], kind: "stock" | "flow", view: TrendView): string[] {
+export function bucketLabelsOf(series: TimelineInput[], kind: "stock" | "flow", view: TrendView): string[] {
   return [...new Set(buildTimeline(series, kind, view).map((x) => x.label))];
 }
 
@@ -860,9 +860,13 @@ export function MarginTrendCard({ salesSeries, grossSeries, patSeries, view }:
 // day-counts (Recv. Turnover 45 days), some are rates stored as decimals
 // (Return on Investment 0.18 = 18%). Format by the ratio's own label rather
 // than assuming one convention.
-function formatRatio(label: string, v: number): string {
+// Efficiency's "Net" row is the cash cycle in days, but its label says so
+// nowhere — so it is recognised by its key, or it reads as "165.11×".
+const NET_DAYS_KEY = /\/e(f)?ficiency_ratio\/net$/;
+
+export function formatRatio(label: string, v: number, lineKey = ""): string {
   const l = label.toLowerCase();
-  if (l.includes("day")) return `${Math.round(v)} days`;
+  if (l.includes("day") || NET_DAYS_KEY.test(lineKey)) return `${Math.round(v)} days`;
   if (l.includes("%") || l.includes("growth") || l.includes("return on")) return `${(v * 100).toFixed(1)}%`;
   return `${v.toFixed(2)}×`;
 }
@@ -887,17 +891,29 @@ const RATIO_BENCHMARKS: Record<string, Bench> = {
   sales_growth: { dir: "high", good: 0.1, warn: 0, unit: "pct" },
   profit_growth: { dir: "high", good: 0.1, warn: 0, unit: "pct" },
 };
-function ratioVerdict(lineKey: string, v: number): { status: "good" | "warn" | "bad"; target: string } | null {
+const benchmarkOf = (lineKey: string): Bench | null => {
   const key = Object.keys(RATIO_BENCHMARKS).find((k) => lineKey.endsWith(`/${k}`));
-  if (!key) return null;
-  const b = RATIO_BENCHMARKS[key];
+  return key ? RATIO_BENCHMARKS[key] : null;
+};
+/** "Target ≥ 1.5×" for a ratio with a benchmark, else null. */
+export function ratioTarget(lineKey: string): string | null {
+  const b = benchmarkOf(lineKey);
+  if (!b) return null;
+  const fmt = (x: number) => (b.unit === "pct" ? `${Math.round(x * 100)}%` : b.unit === "days" ? `${x} days` : `${x}×`);
+  return `Target ${b.dir === "high" ? "≥" : "≤"} ${fmt(b.good)}`;
+}
+export function ratioVerdict(lineKey: string, v: number): { status: "good" | "warn" | "bad"; target: string } | null {
+  const b = benchmarkOf(lineKey);
+  if (!b) return null;
+  // Every "lower is better" ratio here (debt/equity, turnover days) is only
+  // meaningful above zero: a negative one means negative equity or a negative
+  // balance (AMATO DL, Sep 2026: D/E −1.03×), which is the worst case, not the best.
   const status = b.dir === "high"
     ? (v >= b.good ? "good" : v >= b.warn ? "warn" : "bad")
-    : (v <= b.good ? "good" : v <= b.warn ? "warn" : "bad");
-  const fmt = (x: number) => (b.unit === "pct" ? `${Math.round(x * 100)}%` : b.unit === "days" ? `${x} days` : `${x}×`);
-  return { status, target: `Target ${b.dir === "high" ? "≥" : "≤"} ${fmt(b.good)}` };
+    : (v < 0 ? "bad" : v <= b.good ? "good" : v <= b.warn ? "warn" : "bad");
+  return { status, target: ratioTarget(lineKey)! };
 }
-const RAG = { good: { c: SUCCESS_COLOR, bg: "#EDF4EE", t: "Healthy" }, warn: { c: "#B08400", bg: "#FBF3DD", t: "Watch" }, bad: { c: DANGER_COLOR, bg: "#F7E7E4", t: "Concern" } };
+export const RAG = { good: { c: SUCCESS_COLOR, bg: "#EDF4EE", t: "Healthy" }, warn: { c: "#B08400", bg: "#FBF3DD", t: "Watch" }, bad: { c: DANGER_COLOR, bg: "#F7E7E4", t: "Concern" } };
 
 // ── A ratio's value for one bucket ──────────────────────────────────────────
 // Monthly: the sheet's own figure, as typed. A quarter or a year has no ratio in
@@ -1026,7 +1042,7 @@ function RatioCard({ it, view, bucket }: { it: RatioItem; view: TrendView; bucke
         <div className="text-[11px] font-semibold text-gray-500 truncate" title={it.line_label}>{it.line_label}</div>
         {verdict && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap" style={{ color: RAG[verdict.status].c, background: RAG[verdict.status].bg }}>{RAG[verdict.status].t}</span>}
       </div>
-      <div className={`text-xl font-bold mt-1 ${value != null ? "text-gray-800" : "text-gray-400"}`}>{value != null ? formatRatio(it.line_label, value) : "—"}</div>
+      <div className={`text-xl font-bold mt-1 ${value != null ? "text-gray-800" : "text-gray-400"}`}>{value != null ? formatRatio(it.line_label, value, it.line_key) : "—"}</div>
       {basis && <div className="text-[10px] leading-snug text-gray-500 mt-0.5">{basis}</div>}
       <div className="flex items-center justify-between mt-1.5">
         <span className="text-[10px] text-gray-500">{verdict?.target ?? ""}</span>
@@ -1038,7 +1054,7 @@ function RatioCard({ it, view, bucket }: { it: RatioItem; view: TrendView; bucke
 
 // Says on the page how a quarter/year ratio was made — it is not the sheet's
 // number, and the yearly file's own ratio cells will disagree with it.
-function RatioDerivationNote({ cats, view }: { cats: RatioCat[]; view: TrendView }) {
+export function RatioDerivationNote({ cats, view }: { cats: RatioCat[]; view: TrendView }) {
   const items = cats.flatMap((c) => c.items);
   const kinds = new Set(items.map((it) => it.derive?.kind).filter(Boolean));
   if (view === "monthly" || kinds.size === 0) return null;
@@ -1082,7 +1098,10 @@ export function RatiosPanel({ ratios, view, bucket, title = "Key Financial Ratio
 }
 
 // ── Cash Conversion Cycle (DIO + DSO − DPO) — days of cash trapped in ops ─────
-export function CashCycleCard({ ratios, view, bucket }: { ratios: RatioCat[]; view: TrendView; bucket: string }) {
+// One reading of the cycle for one company and bucket — shared by this card,
+// the Watch List and the All Companies comparison so they can never disagree.
+export function cashCycle(ratios: RatioCat[], view: TrendView, bucket: string):
+  { dio: number; dso: number; dpo: number; ccc: number } | null {
   const find = (suffix: string) => {
     for (const c of ratios) for (const it of c.items) if (it.line_key.endsWith(`/${suffix}`)) return ratioAt(it, view, bucket);
     return null;
@@ -1091,8 +1110,17 @@ export function CashCycleCard({ ratios, view, bucket }: { ratios: RatioCat[]; vi
   const dso = find("recv_turnover_in_days");
   const dpo = find("vendor_turnover_in_days");
   if (dio == null || dso == null || dpo == null) return null;
-  const ccc = dio + dso - dpo;
-  const cccColor = ccc <= 60 ? SUCCESS_COLOR : ccc <= 90 ? "#B08400" : DANGER_COLOR;
+  return { dio, dso, dpo, ccc: dio + dso - dpo };
+}
+
+/** ≤ 60 days healthy, ≤ 90 watch, beyond that concern. */
+export const cccStatus = (ccc: number): keyof typeof RAG => (ccc <= 60 ? "good" : ccc <= 90 ? "warn" : "bad");
+
+export function CashCycleCard({ ratios, view, bucket }: { ratios: RatioCat[]; view: TrendView; bucket: string }) {
+  const cycle = cashCycle(ratios, view, bucket);
+  if (!cycle) return null;
+  const { dio, dso, dpo, ccc } = cycle;
+  const cccColor = RAG[cccStatus(ccc)].c;
   const stat = (label: string, v: number, sign = "") => (
     <div className="flex flex-col items-center px-4 py-2">
       <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{label}</span>
@@ -1109,7 +1137,7 @@ export function CashCycleCard({ ratios, view, bucket }: { ratios: RatioCat[]; vi
         <span className="text-gray-500 font-bold">−</span>
         {stat("Payables (DPO)", dpo)}
         <span className="text-gray-500 font-bold">=</span>
-        <div className="flex flex-col items-center px-5 py-2 rounded-xl" style={{ background: RAG[ccc <= 60 ? "good" : ccc <= 90 ? "warn" : "bad"].bg }}>
+        <div className="flex flex-col items-center px-5 py-2 rounded-xl" style={{ background: RAG[cccStatus(ccc)].bg }}>
           <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: cccColor }}>Cash Cycle</span>
           <span className="text-2xl font-bold mt-0.5" style={{ color: cccColor }}>{Math.round(ccc)}</span>
           <span className="text-[9px]" style={{ color: cccColor }}>days</span>
@@ -1121,15 +1149,6 @@ export function CashCycleCard({ ratios, view, bucket }: { ratios: RatioCat[]; vi
 }
 
 // ── Watch List — rule-based flags from the selected period's ratios + recon ──
-function insightCCC(ratios: RatioCat[], view: TrendView, bucket: string): number | null {
-  const find = (s: string) => {
-    for (const c of ratios) for (const it of c.items) if (it.line_key.endsWith(`/${s}`)) return ratioAt(it, view, bucket);
-    return null;
-  };
-  const dio = find("inventory_turnover_in_days"), dso = find("recv_turnover_in_days"), dpo = find("vendor_turnover_in_days");
-  return dio != null && dso != null && dpo != null ? dio + dso - dpo : null;
-}
-
 export function buildInsights(data: FinAnalytics, view: TrendView, bucket: string): { sev: number; text: string }[] {
   const out: { sev: number; text: string }[] = [];
   for (const t of data.reconciliation ?? []) {
@@ -1141,10 +1160,10 @@ export function buildInsights(data: FinAnalytics, view: TrendView, bucket: strin
     const v = ratioAt(it, view, bucket);
     if (v == null) continue;
     const verdict = ratioVerdict(it.line_key, v);
-    if (verdict?.status === "bad") out.push({ sev: 3, text: `${it.line_label} at ${formatRatio(it.line_label, v)} — ${verdict.target}.` });
-    else if (verdict?.status === "warn") out.push({ sev: 2, text: `${it.line_label} at ${formatRatio(it.line_label, v)} — watch (${verdict.target}).` });
+    if (verdict?.status === "bad") out.push({ sev: 3, text: `${it.line_label} at ${formatRatio(it.line_label, v, it.line_key)} — ${verdict.target}.` });
+    else if (verdict?.status === "warn") out.push({ sev: 2, text: `${it.line_label} at ${formatRatio(it.line_label, v, it.line_key)} — watch (${verdict.target}).` });
   }
-  const ccc = insightCCC(data.ratios ?? [], view, bucket);
+  const ccc = cashCycle(data.ratios ?? [], view, bucket)?.ccc ?? null;
   if (ccc != null && ccc > 90) out.push({ sev: 2, text: `Cash conversion cycle at ${Math.round(ccc)} days — heavy working-capital lock-up.` });
   const seen = new Set<string>();
   return out.filter((o) => !seen.has(o.text) && seen.add(o.text)).sort((a, b) => b.sev - a.sev).slice(0, 6);

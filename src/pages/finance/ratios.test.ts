@@ -8,7 +8,7 @@
  * AMATO SRN's real figures (Apr–Sep 2026 monthly, FY 24-25 / 25-26 yearly).
  */
 import { describe, it, expect } from "vitest";
-import { ratioReading, type RatioItem, type RatioPoint } from "./dashboardKit";
+import { formatRatio, ratioReading, ratioVerdict, type RatioItem, type RatioPoint } from "./dashboardKit";
 
 const MONTH_ENDS = ["2026-04-30", "2026-05-31", "2026-06-30", "2026-07-31", "2026-08-31", "2026-09-30"];
 const months = (values: number[]): RatioPoint[] =>
@@ -138,5 +138,17 @@ describe("balance-only ratios", () => {
 
   it("shows nothing for a period it has no figure for, not another period's", () => {
     expect(ratioReading(current, "monthly", "Oct 2026").value).toBeNull();
+  });
+});
+
+describe("ratio verdicts", () => {
+  it("treats a negative debt/equity (negative equity) as a concern, not healthy", () => {
+    expect(ratioVerdict("ratios/solvency_ratio/debt_equity_ratio", -1.03)?.status).toBe("bad");
+    expect(ratioVerdict("ratios/solvency_ratio/debt_equity_ratio", 0.8)?.status).toBe("good");
+  });
+
+  it("formats the efficiency Net row (the cash cycle) in days", () => {
+    expect(formatRatio("Net ", 165.11, "ratios/eficiency_ratio/net")).toBe("165 days");
+    expect(formatRatio("Current Ratio", 1.5, "ratios/liquidity_ratio/current_ratio")).toBe("1.50×");
   });
 });

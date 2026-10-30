@@ -13,6 +13,7 @@ import BudgetView from "@/pages/finance/BudgetView";
 import UnitEconomicsView from "@/pages/finance/UnitEconomicsView";
 import CashFlowView from "@/pages/finance/CashFlowView";
 import ConsolidatedView from "@/pages/finance/ConsolidatedView";
+import { COMPANY_GROUP_OPTIONS, type CompanyGroup } from "@/pages/finance/all-companies/shared";
 import { StickyLeadingContext } from "@/pages/finance/dashboardKit";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -26,7 +27,7 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-interface SheetSourceItem { id: string; sheet_id: string; label: string; created_at: string; }
+interface SheetSourceItem { id: string; sheet_id: string; label: string; company_group: CompanyGroup | null; created_at: string; }
 interface MasterItem { id: string; sheet_id: string; label: string; last_synced_at: string | null; last_sync_status: string | null; }
 interface SyncResult {
   sync_id: string; companies?: number; rows_total: number; rows_inserted: number; rows_updated: number;
@@ -224,6 +225,26 @@ export default function FinancePage() {
       toast.success("Company renamed", `"${source.label}" is now "${label}".`);
     } catch (e) {
       toast.error("Couldn't rename company", e instanceof Error ? e.message : "Please try again.");
+    }
+  };
+
+  const handleSetCompanyGroup = async (source: SheetSourceItem, group: CompanyGroup | null) => {
+    if (group === source.company_group) return;
+    try {
+      const res = await fetch(`${API_URL}/finance/sheet-sources/${source.id}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ company_group: group }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      await loadSources();
+      // The All Companies view holds its own copy of each company's group.
+      setRefreshNonce((n) => n + 1);
+    } catch (e) {
+      toast.error("Couldn't set company group", e instanceof Error ? e.message : "Please try again.");
     }
   };
 
@@ -437,6 +458,35 @@ export default function FinancePage() {
               </motion.div>
             )}
           </AnimatePresence>
+        </div>
+      )}
+
+      {isAdmin && onSheetsTab && sources.length > 0 && (
+        <div className="no-print bg-white border border-[#EAE3D6] rounded-2xl p-5 flex flex-col gap-3">
+          <div>
+            <h2 className="text-sm font-bold text-gray-800">Companies — group</h2>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              Marks each company as part of the <b>Amato Group</b> or <b>Other</b>; the All Companies view filters on it.
+              A new company arrives from sync with no group and shows only under “All groups” until it is set here. Sync never changes a group.
+            </p>
+          </div>
+          <div className="flex flex-col divide-y divide-gray-100 border border-gray-100 rounded-xl">
+            {sources.map((s) => (
+              <div key={s.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                <div className="min-w-0">
+                  <div className="text-[13px] font-semibold text-gray-800 truncate">{s.label}</div>
+                  <div className="text-[11px] text-gray-500 truncate">{s.sheet_id.replace(/_/g, " ").toUpperCase()}</div>
+                </div>
+                <Select
+                  value={s.company_group ?? ""}
+                  onChange={(v) => handleSetCompanyGroup(s, (v || null) as CompanyGroup | null)}
+                  placeholder="Not set"
+                  options={[{ value: "", label: "Not set" }, ...COMPANY_GROUP_OPTIONS]}
+                  className="min-w-[150px] shrink-0"
+                />
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

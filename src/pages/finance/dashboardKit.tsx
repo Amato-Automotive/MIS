@@ -340,12 +340,14 @@ export const StickyLeadingContext = createContext<{ leading: ReactNode; top: num
   top: 68,
 });
 
-export function DashboardControls({ view, onView, labels, bucket, onBucket, leading }:
+export function DashboardControls({ view, onView, labels, bucket, onBucket, leading, filters }:
   { view: TrendView; onView: (v: TrendView) => void; labels: string[]; bucket: string;
     onBucket: (v: string) => void;
     /** Rendered in place of the "View" label — used to surface the company
      *  selector once the page's own selector has scrolled out of sight. */
-    leading?: ReactNode }) {
+    leading?: ReactNode;
+    /** Filters that sit after the period, in the bar's standard order. */
+    filters?: ReactNode }) {
   const { leading: injected, top } = useContext(StickyLeadingContext);
   const lead = leading ?? injected;
   return (
@@ -357,6 +359,7 @@ export function DashboardControls({ view, onView, labels, bucket, onBucket, lead
       <div className="flex items-center gap-2">
         <BucketToggle view={view} onChange={onView} />
         <BucketSelect labels={labels} value={bucket} onChange={onBucket} />
+        {filters}
       </div>
     </div>
   );

@@ -97,6 +97,7 @@ class SheetSource(Base):
     quarter       = Column(String(2), nullable=True)
     month         = Column(Integer, nullable=True)  # OE visit plans: one sheet per (calendar_year, month)
     kind          = Column(String(10), nullable=True)  # finance v3: 'master' | 'company'
+    company_group = Column(String(10), nullable=True)  # finance companies: 'amato' | 'other' | NULL (untagged)
     created_by    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at    = Column(TIMESTAMP(timezone=True), server_default=func.now())
 

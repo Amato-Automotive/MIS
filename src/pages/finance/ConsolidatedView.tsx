@@ -12,6 +12,8 @@
 // at its close, ratios are read exactly as the company tabs read them.
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
+import Select from "@/components/ui/Select";
+import { FILTER_LABELS } from "@/components/ui/FilterBar";
 import {
   DashboardControls, EmptyState, SectionHeading, bucketEndDate, bucketLabelsOf, bucketValue,
 } from "./dashboardKit";
@@ -22,7 +24,8 @@ import {
 } from "./format";
 import { MARGIN_BANDS, classifyMargin, netPatMargin } from "./margin";
 import {
-  CompanyTd, MoneyTd, PeriodEmpty, TableCard, Th, asAtText, commonDate, rowBg, type ConsolidatedCompany,
+  COMPANY_GROUP_LABELS, COMPANY_GROUP_OPTIONS, CompanyTd, MoneyTd, PeriodEmpty, TableCard, Th, asAtText, commonDate, rowBg,
+  type CompanyGroup, type ConsolidatedCompany,
 } from "./all-companies/shared";
 import BudgetSection from "./all-companies/BudgetSection";
 import SalesAccountSection from "./all-companies/SalesAccountSection";
@@ -47,7 +50,8 @@ const anchor = (id: string) => <div id={id} className="scroll-mt-32 -mb-6" />;
 
 export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: number }) {
   const { token } = useAuth();
-  const [companies, setCompanies] = useState<ConsolidatedCompany[]>([]);
+  const [allCompanies, setAllCompanies] = useState<ConsolidatedCompany[]>([]);
+  const [group, setGroup] = useState<CompanyGroup | "">("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<TrendView>("monthly");
@@ -62,11 +66,21 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
         if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "Could not load company figures");
         return r.json();
       })
-      .then((d: { companies: ConsolidatedCompany[] }) => setCompanies(d.companies ?? []))
+      .then((d: { companies: ConsolidatedCompany[] }) => setAllCompanies(d.companies ?? []))
       .catch((e) => { if (e.name !== "AbortError") setError(e.message); })
       .finally(() => { if (!ctrl.signal.aborted) setLoading(false); });
     return () => ctrl.abort();
   }, [token, refreshNonce]);
+
+  // Cut client-side from the one payload: every section below reads `companies`,
+  // so the group filter reaches all of them and the period list with them.
+  // Untagged companies show only under "All groups" — putting them in "Other"
+  // would claim a categorisation nobody made.
+  const companies = useMemo(
+    () => (group ? allCompanies.filter((c) => c.company_group === group) : allCompanies),
+    [allCompanies, group]
+  );
+  const untagged = allCompanies.filter((c) => !c.company_group).length;
 
   // The period picker must offer every bucket ANY company has ANY section for —
   // pooling P&L, Balance Sheet and Working Capital points gives the union in order.
@@ -105,7 +119,17 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
 
   if (loading) return <div className="text-sm text-gray-500 py-10 text-center">Loading all companies…</div>;
   if (error) return <EmptyState>{error}</EmptyState>;
-  if (companies.length === 0) return <EmptyState>No companies available yet. Register the master files from the Data Sources tab and sync.</EmptyState>;
+  if (allCompanies.length === 0) return <EmptyState>No companies available yet. Register the master files from the Data Sources tab and sync.</EmptyState>;
+
+  const groupFilter = (
+    <Select
+      value={group}
+      onChange={(v) => setGroup(v as CompanyGroup | "")}
+      placeholder={FILTER_LABELS.companyGroup.placeholder}
+      options={[{ value: "", label: FILTER_LABELS.companyGroup.all }, ...COMPANY_GROUP_OPTIONS]}
+      className="min-w-[140px]"
+    />
+  );
 
   const anyPl = plRows.some((r) => r.sales != null || r.pat != null);
   const anyBs = bsRows.some((r) => r.sources != null || r.application != null);
@@ -113,11 +137,16 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
 
   return (
     <div className="flex flex-col gap-6">
-      <DashboardControls view={view} onView={setView} labels={bucketLabels} bucket={effBucket} onBucket={setBucket} />
+      <DashboardControls view={view} onView={setView} labels={bucketLabels} bucket={effBucket} onBucket={setBucket}
+        filters={groupFilter} />
 
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 -mb-2">
         <p className="text-[11px] text-gray-500">
           Each company <b>as reported</b> — nothing is added across companies, so a roll-up tab appears as its own row.
+          {group && <> Showing <b>{COMPANY_GROUP_LABELS[group]}</b> companies only.</>}
+          {untagged > 0 && (
+            <> {untagged} {untagged === 1 ? "company is" : "companies are"} not yet in a group and show only under <b>All groups</b> — an admin sets the group from the Data Sources tab.</>
+          )}
         </p>
         <nav className="no-print flex flex-wrap gap-1.5">
           {SECTIONS.map((sec) => (
@@ -130,6 +159,12 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
         </nav>
       </div>
 
+      {companies.length === 0 ? (
+        <EmptyState>
+          No companies are in this group yet.{" "}
+          <button onClick={() => setGroup("")} className="font-semibold text-brand-orange hover:underline">Show all groups</button>
+        </EmptyState>
+      ) : (<>
       {anchor("allco-pl")}
       <SectionHeading accent={REVENUE_COLOR}>Profit &amp; Loss · {effBucket || "—"}</SectionHeading>
       {!anyPl ? (
@@ -249,6 +284,7 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
       {anchor("allco-ratios")}
       <SectionHeading accent={SOURCES_COLOR}>Key Ratios · {effBucket || "—"}</SectionHeading>
       <RatioScorecard companies={companies} view={view} bucket={effBucket} onJump={setBucket} />
+      </>)}
     </div>
   );
 }

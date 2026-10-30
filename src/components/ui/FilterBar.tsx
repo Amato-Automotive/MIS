@@ -153,6 +153,7 @@ export const FILTER_LABELS = {
   product:     { placeholder: "Product",     all: "All products" },
   mode:        { placeholder: "Mode",        all: "Visits + Calls" },
   company:     { placeholder: "Company",     all: "All companies" },
+  companyGroup:{ placeholder: "Group",       all: "All groups" },
   country:     { placeholder: "Country",     all: "All countries" },
   customerType:{ placeholder: "Customer type", all: "All customer types" },
   stage:       { placeholder: "Stage",       all: "All stages" },

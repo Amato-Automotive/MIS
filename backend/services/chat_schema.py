@@ -71,6 +71,7 @@ TABLES = [
         ("id", ""), ("module", "sales_plant_to_depot, sales_depot_to_distributor, finance, oe_visit_plan, "
                                "oe_log_book, oe_targets, oe_dealer_data, oe_oem_targets, export_leads"),
         ("label", "for Finance company rows: the company name"), ("kind", "Finance only: 'master' | 'company'"),
+        ("company_group", "Finance companies: 'amato' (Amato Group) | 'other' | NULL = not yet categorised"),
         ("calendar_year", ""), ("quarter", "'Q1'..'Q4' where per-quarter"), ("month", "where per-month"),
     ]),
     ("sync_logs", "One row per sheet sync. Newest rows only (5 kept per sheet).", [

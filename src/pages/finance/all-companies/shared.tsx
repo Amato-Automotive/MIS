@@ -10,9 +10,21 @@ export type WcKey = "cash" | "inventory" | "debtors" | "current_assets" | "credi
 
 export interface SalesChannel { key: string; label: string; item_no: number; series: Series }
 
+/** An admin-set tag on each company; null until someone categorises it. */
+export type CompanyGroup = "amato" | "other";
+
+export const COMPANY_GROUP_LABELS: Record<CompanyGroup, string> = {
+  amato: "Amato Group",
+  other: "Other",
+};
+
+export const COMPANY_GROUP_OPTIONS = (Object.keys(COMPANY_GROUP_LABELS) as CompanyGroup[])
+  .map((g) => ({ value: g, label: COMPANY_GROUP_LABELS[g] }));
+
 export interface ConsolidatedCompany {
   id: string;
   label: string;
+  company_group: CompanyGroup | null;
   /** The sheet tab's name ("AMATO SRN") — short enough for a column header. */
   short_label: string;
   pl: { sales: Series; gross: Series; pbitda: Series; pat: Series };

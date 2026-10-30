@@ -360,33 +360,44 @@ def list_sheet_sources(db: Session = Depends(get_db), current_user: User = Depen
         .all()
     )
     return [
-        {"id": str(s.id), "sheet_id": s.sheet_id, "label": s.label,
+        {"id": str(s.id), "sheet_id": s.sheet_id, "label": s.label, "company_group": s.company_group,
          "created_at": s.created_at.isoformat() if s.created_at else None,
          "last_synced_at": None, "last_sync_status": None}
         for s in sources if str(s.id) in allowed_ids
     ]
 
 
-class CompanyRenameIn(BaseModel):
-    label: str
+COMPANY_GROUPS = ("amato", "other")
 
 
-# Changes the display name only. The company's identity is sheet_id (the slug of
-# its master-sheet tab), which access grants and finance_lines hang off — so the
-# tab keeps its old name and sync, which sets label only on create, leaves this be.
+class CompanyUpdateIn(BaseModel):
+    label: Optional[str] = None
+    # Sent as null to un-tag; left out entirely to leave it unchanged.
+    company_group: Optional[str] = None
+
+
+# Changes the display name and/or group only. The company's identity is sheet_id
+# (the slug of its master-sheet tab), which access grants and finance_lines hang
+# off — so the tab keeps its old name, and sync, which sets label only on create
+# and never touches company_group, leaves both be.
 @router.patch("/sheet-sources/{source_id}")
-def rename_sheet_source(source_id: str, body: CompanyRenameIn, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def update_sheet_source(source_id: str, body: CompanyUpdateIn, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_module(db, current_user, MODULE_KEY)
     _require_admin(current_user)
-    label = body.label.strip()
-    if not label:
-        raise HTTPException(status_code=400, detail="Company name cannot be empty")
     source = db.query(SheetSource).filter(SheetSource.id == source_id, SheetSource.module == MODULE, SheetSource.kind == "company").first()
     if not source:
         raise HTTPException(status_code=404, detail="Company not found")
-    source.label = label
+    if "label" in body.model_fields_set:
+        label = (body.label or "").strip()
+        if not label:
+            raise HTTPException(status_code=400, detail="Company name cannot be empty")
+        source.label = label
+    if "company_group" in body.model_fields_set:
+        if body.company_group is not None and body.company_group not in COMPANY_GROUPS:
+            raise HTTPException(status_code=400, detail=f"Group must be one of {', '.join(COMPANY_GROUPS)}")
+        source.company_group = body.company_group
     db.commit()
-    return {"id": str(source.id), "sheet_id": source.sheet_id, "label": source.label}
+    return {"id": str(source.id), "sheet_id": source.sheet_id, "label": source.label, "company_group": source.company_group}
 
 
 @router.delete("/sheet-sources/{source_id}")
@@ -920,7 +931,7 @@ def finance_consolidated(db: Session = Depends(get_db), current_user: User = Dep
         sid = str(c.id)
         channels, sales_total = _sales_channels(acc[sid]["sales_rows"])
         out.append({
-            "id": sid, "label": c.label,
+            "id": sid, "label": c.label, "company_group": c.company_group,
             # The sheet tab's own name ("AMATO SRN") — the company key is its slug.
             # Display names can be renamed to full legal names that no chart axis
             # or column header can hold; the tab name is short and finance's own.

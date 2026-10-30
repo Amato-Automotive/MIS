@@ -271,8 +271,8 @@ export default function BudgetView({ sheetSourceId, refreshNonce = 0 }: { sheetS
           <SectionHeading accent={APPLICATION_COLOR}>Cash Flow Budget</SectionHeading>
           <TableCard footer={
             <>Opening cash is the period's first month, closing cash its last; inflow, outflow and net flow add up the months.
-              The sheet's Cash Flow statement reports opening and closing cash but not collections or payments, so only those two
-              have actuals. The highlighted column is {effBucket}.</>
+              Rows are as finance writes them in the sheet — lines named “(Actual)” are finance's own actuals, the rest are the plan.
+              The highlighted column is {effBucket}.</>
           }>
             <thead>
               <tr className="border-b border-[#EAE3D6] bg-[#FAF7F1]">
@@ -283,14 +283,19 @@ export default function BudgetView({ sheetSourceId, refreshNonce = 0 }: { sheetS
             <tbody>
               {cash.flatMap((it) => {
                 const actual = actualOf(it);
-                const rows = [{ key: it.line_key, label: it.line_label.trim(), series: it.series, sub: "Budget" }];
-                if (actual) rows.push({ key: `${it.line_key}#actual`, label: it.line_label.trim(), series: actual.series, sub: "Actual" });
+                // Finance now types actuals into the block themselves and marks the row
+                // "(Actual)" — a BUDGET tag beside it would contradict its own name.
+                const label = it.line_label.trim();
+                const rows = [{ key: it.line_key, label, series: it.series, sub: /\(\s*actual\s*\)/i.test(label) ? null : "Budget" }];
+                if (actual) rows.push({ key: `${it.line_key}#actual`, label, series: actual.series, sub: "Actual" });
                 return rows;
               }).map((row, i) => (
                 <tr key={row.key} className={rowBg(i)}>
                   <td className="px-4 py-2.5 whitespace-nowrap">
                     <span className="text-[13px] font-semibold text-gray-800">{row.label}</span>
-                    <span className={`ml-2 text-[10px] font-bold uppercase tracking-wider ${row.sub === "Actual" ? "text-gray-700" : "text-gray-500"}`}>{row.sub}</span>
+                    {row.sub && (
+                      <span className={`ml-2 text-[10px] font-bold uppercase tracking-wider ${row.sub === "Actual" ? "text-gray-700" : "text-gray-500"}`}>{row.sub}</span>
+                    )}
                   </td>
                   {cashLabels.map((l) => {
                     const v = cashLineValue(row.series, row.key.replace("#actual", ""), view, l);

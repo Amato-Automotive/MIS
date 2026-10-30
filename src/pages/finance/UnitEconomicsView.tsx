@@ -135,8 +135,8 @@ function ProductCard({ name, e }: { name: string; e: ProductEconomics }) {
       </div>
       <div className="mt-3"><PriceStack e={e} /></div>
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-[12px]">
-        <dt className="text-gray-500">Selling price</dt><dd className="text-right font-semibold text-gray-800 tabular-nums">{rupee(e.price)}</dd>
-        <dt className="text-gray-500">Cost per unit</dt><dd className="text-right font-semibold text-gray-800 tabular-nums">{rupee(e.costPerUnit)}</dd>
+        <dt className="text-gray-500" title="Revenue ÷ units sold">Avg selling price</dt><dd className="text-right font-semibold text-gray-800 tabular-nums">{rupee(e.price)}</dd>
+        <dt className="text-gray-500" title="Product cost + variable + fixed operating cost, per unit">Avg cost per unit</dt><dd className="text-right font-semibold text-gray-800 tabular-nums">{rupee(e.costPerUnit)}</dd>
         <dt className="text-gray-500">Units sold</dt><dd className="text-right font-semibold text-gray-800 tabular-nums">{qty(e.sold)}</dd>
         <dt className="text-gray-500">Revenue</dt>
         <dd className="text-right font-semibold text-gray-800 tabular-nums" title={e.revenue != null ? formatINR(e.revenue) : undefined}>{e.revenue != null ? formatKpi(e.revenue) : "—"}</dd>
@@ -216,7 +216,7 @@ export default function UnitEconomicsView({ sheetSourceId, refreshNonce = 0 }: {
         {rows.map((r) => <ProductCard key={r.key} name={r.name} e={r.e} />)}
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 -mt-3 text-[11px] text-gray-500">
-        <span>Each bar is one unit's selling price:</span>
+        <span>Prices and costs are averages per unit sold, not totals. Each bar is one unit's average selling price:</span>
         {([["product", "Product cost"], ["variable", "Variable operating cost"], ["fixed", "Fixed operating cost"]] as const).map(([k, l]) => (
           <span key={k} className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: COST_SHADES[k] }} />{l}</span>
         ))}
@@ -241,10 +241,10 @@ export default function UnitEconomicsView({ sheetSourceId, refreshNonce = 0 }: {
             <Th>Units sold</Th>
             <Th>Units produced</Th>
             <Th>Revenue</Th>
-            <Th>Selling price</Th>
+            <Th>Avg selling price</Th>
             <Th>Product cost</Th>
             <Th>Operating cost</Th>
-            <Th>Cost / unit</Th>
+            <Th>Avg cost / unit</Th>
             <Th>Profit / unit</Th>
             <Th>Margin</Th>
           </tr>

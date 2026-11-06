@@ -200,23 +200,68 @@ export function pointBucketLabel(p: TimelineInput, view: TrendView): string {
   return `FY ${String(fy).slice(2)}-${String(fy + 1).slice(2)}`;
 }
 
-// The sheet's OWN percent for a bucket. Percents are ratios the sheet computes
-// against a base it chooses (composition, % of Sales, …), so they must never be
-// summed or re-averaged across periods — a multi-month bucket takes the latest
-// point's percent, the same "keep the latest point in the bucket" rule
-// bucketStockSeriesWithPercent uses. In the monthly view (one point per bucket)
-// it's simply that month's percent as typed in the sheet. Prefers monthly
-// points (matching buildTimeline); falls back to an annual point for FYs that
-// only carry yearly data. Returns null when the sheet left the % cell blank.
-export function bucketPercent(series: FinPoint[], view: TrendView, label: string): number | null {
+// The base each month's percent was taken against, read back from the sheet
+// itself: amount ÷ percent. Pooled over a set of series (a P&L section, where
+// every % is "of Sales") so a month one line can't answer — a zero amount, a
+// blank % cell — still has a base. The median keeps one oddly-typed line from
+// moving it.
+export function monthlyPercentBase(seriesList: FinPoint[][]): Map<string, number> {
+  const byMonth = new Map<string, number[]>();
+  for (const series of seriesList) {
+    for (const p of series) {
+      if (p.period_type !== "monthly" || !p.amount || !p.percent) continue;
+      const list = byMonth.get(p.period_end_date) ?? [];
+      list.push(p.amount / p.percent);
+      byMonth.set(p.period_end_date, list);
+    }
+  }
+  const out = new Map<string, number>();
+  for (const [month, bases] of byMonth) {
+    const sorted = [...bases].sort((a, b) => a - b);
+    out.set(month, sorted[Math.floor(sorted.length / 2)]);
+  }
+  return out;
+}
+
+// A line's percent for a bucket. One month, or an annual point, is the sheet's
+// own figure as typed. Over several months the two kinds part ways:
+//  - stock (Balance Sheet): the bucket IS its closing month, so that month's %.
+//  - flow (P&L): the bucket adds its months, so its % is Σ amount ÷ Σ base, with
+//    each month's base read back from the sheet (see monthlyPercentBase). Taking
+//    the last month's % here put September's margin beside the whole quarter's
+//    profit — Q2 Gross Margin read 17.8% on ₹4.89Cr of ₹22.25Cr sales (22.0%).
+// Never an average of monthly percents: a big month and a small one don't weigh
+// the same. Returns null when the sheet's % cells don't let it be worked out.
+export function bucketPercent(series: FinPoint[], view: TrendView, label: string,
+  kind: "stock" | "flow" = "stock", base?: Map<string, number>): number | null {
   const pts = series.filter((p) => p.amount != null);
   const monthlyHits = pts.filter((p) => p.period_type === "monthly" && pointBucketLabel(p, view) === label);
   const pool = monthlyHits.length > 0
     ? monthlyHits
     : pts.filter((p) => p.period_type === "annual" && periodLabel(p) === label);
   if (pool.length === 0) return null;
-  const latest = [...pool].sort((a, b) => a.period_end_date.localeCompare(b.period_end_date)).slice(-1)[0];
-  return latest.percent ?? null;
+  const sorted = [...pool].sort((a, b) => a.period_end_date.localeCompare(b.period_end_date));
+  if (kind === "stock" || sorted.length === 1 || sorted[0].period_type === "annual") {
+    return sorted[sorted.length - 1].percent ?? null;
+  }
+  // Every month the bucket covers counts toward the base — including one this
+  // line skipped, which adds nothing to the amount but still adds its sales.
+  const months = new Set(sorted.map((p) => p.period_end_date));
+  for (const m of base?.keys() ?? []) {
+    if (pointBucketLabel({ period_end_date: m } as FinPoint, view) === label) months.add(m);
+  }
+  const byMonth = new Map(sorted.map((p) => [p.period_end_date, p]));
+  let num = 0;
+  let den = 0;
+  for (const m of months) {
+    const p = byMonth.get(m);
+    const own = p?.amount && p.percent ? p.amount / p.percent : null;
+    const b = own ?? base?.get(m) ?? null;
+    if (b == null) return null;
+    num += p?.amount ?? 0;
+    den += b;
+  }
+  return den !== 0 ? num / den : null;
 }
 
 // The ordered bucket labels a series produces at a given granularity — used to
@@ -470,6 +515,7 @@ export function MoneyTrendCard({ title, note, primary, primaryLabel, kind, secon
     secondary?: FinPoint[]; secondaryLabel?: string; view: TrendView;
   }) {
   const data = useMemo(() => {
+    const base = monthlyPercentBase(secondary ? [primary, secondary] : [primary]);
     const a = buildTimeline(primary, kind, view);
     const b = secondary ? buildTimeline(secondary, kind, view) : [];
     const bByLabel = new Map(b.map((x) => [x.label, x.value]));
@@ -479,8 +525,8 @@ export function MoneyTrendCard({ title, note, primary, primaryLabel, kind, secon
       secondary: bByLabel.get(x.label) ?? null,
       // The sheet's own share for each series at this bucket, surfaced in the
       // tooltip. Null wherever the sheet left the % blank.
-      primaryPct: bucketPercent(primary, view, x.label),
-      secondaryPct: secondary ? bucketPercent(secondary, view, x.label) : null,
+      primaryPct: bucketPercent(primary, view, x.label, kind, base),
+      secondaryPct: secondary ? bucketPercent(secondary, view, x.label, kind, base) : null,
     }));
   }, [primary, secondary, kind, view]);
 
@@ -525,10 +571,13 @@ export function MoneyTrendCard({ title, note, primary, primaryLabel, kind, secon
 // ── Donut — current mix of one additive sub-section at the snapshot period ────
 function DonutCard({ sub, kind, view, bucket, groupLabel, colorMap }:
   { sub: FinSubSection; kind: "stock" | "flow"; view: TrendView; bucket: string; groupLabel: string; colorMap: Map<string, string> }) {
-  const rows = useMemo(() => sub.line_items
-    .map((it) => ({ key: it.line_key, label: it.line_label, value: bucketValue(it.series, kind, view, bucket) ?? 0, percent: bucketPercent(it.series, view, bucket) }))
-    .filter((r) => r.value > 0)
-    .sort((a, b) => b.value - a.value), [sub, kind, view, bucket]);
+  const rows = useMemo(() => {
+    const base = monthlyPercentBase([...sub.line_items.map((it) => it.series), sub.total?.series ?? []]);
+    return sub.line_items
+      .map((it) => ({ key: it.line_key, label: it.line_label, value: bucketValue(it.series, kind, view, bucket) ?? 0, percent: bucketPercent(it.series, view, bucket, kind, base) }))
+      .filter((r) => r.value > 0)
+      .sort((a, b) => b.value - a.value);
+  }, [sub, kind, view, bucket]);
   const total = bucketValue(sub.total?.series ?? [], kind, view, bucket) ?? rows.reduce((s, r) => s + r.value, 0);
 
   const title = sub.label ?? groupLabel;
@@ -703,12 +752,12 @@ function LineItemTable({ group, kind, view, mode = "amount" }:
     rows.map((r) => (r.series.length ? new Map(buildTimeline(r.series, kind, view).map((x) => [x.label, x.value])) : null)),
     [rows, kind, view]);
 
-  // The sheet's OWN percent per bucket — bucketPercent applies the same "latest
-  // point in the bucket" rule used elsewhere, so a quarter/year % is a figure
-  // the sheet actually typed, never a re-average of monthly percentages.
-  const bucketedPct = useMemo((): (Map<string, number | null> | null)[] =>
-    rows.map((r) => (r.series.length ? new Map(cols.map((c) => [c, bucketPercent(r.series, view, c)])) : null)),
-    [rows, view, cols]);
+  // Percent per bucket by bucketPercent's rule: the sheet's own % for a month or
+  // a stock, the period's totals for a multi-month flow.
+  const bucketedPct = useMemo((): (Map<string, number | null> | null)[] => {
+    const base = monthlyPercentBase(rows.map((r) => r.series));
+    return rows.map((r) => (r.series.length ? new Map(cols.map((c) => [c, bucketPercent(r.series, view, c, kind, base)])) : null));
+  }, [rows, view, cols, kind]);
 
   return (
     <div className="overflow-x-auto">
@@ -1256,7 +1305,9 @@ export function GroupBlock({ group, view, bucket, kind }: { group: FinGroup; vie
       })}
       <Card title={`${group.section_label} — detail`}
         note={valueMode === "percent"
-          ? "The sheet's own percentages at the current granularity; use the View control at the top to switch period."
+          ? (kind === "flow"
+            ? "A month shows the sheet's own %; a quarter or year is worked out from the period's totals against the same base, not taken from its last month."
+            : "The sheet's own percentages, as at the close of each period; use the View control at the top to switch period.")
           : "Values at the current granularity; use the View control at the top to switch."}
         right={hasPercent ? <ValueModeToggle mode={valueMode} onChange={setValueMode} /> : undefined}>
         <LineItemTable group={group} kind={kind} view={view} mode={valueMode} />

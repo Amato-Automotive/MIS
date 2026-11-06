@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import {
   KpiCard, MoneyTrendCard, GroupBlock, DashboardControls, EmptyState, ProfitBridgeCard, MarginTrendCard,
-  RatiosPanel, WatchListCard, SectionHeading, bucketLabelsOf, bucketChange, bucketPercent,
+  RatiosPanel, WatchListCard, SectionHeading, bucketLabelsOf, bucketChange, bucketPercent, monthlyPercentBase,
   type FinAnalytics, type FinGroup, type FinPoint,
 } from "./dashboardKit";
 import type { TrendView } from "./aggregate";
@@ -67,11 +67,13 @@ export default function ProfitLossView({ sheetSourceId, refreshNonce = 0 }: { sh
   const grossCh = bucketChange(gross, "flow", view, effBucket);
   const pbitdaCh = bucketChange(pbitda, "flow", view, effBucket);
   const patCh = bucketChange(pat, "flow", view, effBucket);
-  // The sheet's own "% of Sales" for each line, as typed — never recomputed.
-  const salesShare = bucketPercent(sales, view, effBucket);
-  const grossShare = bucketPercent(gross, view, effBucket);
-  const pbitdaShare = bucketPercent(pbitda, view, effBucket);
-  const patShare = bucketPercent(pat, view, effBucket);
+  // "% of Sales" for the picked period: the sheet's own figure for a month, the
+  // period's totals for a quarter or year (see bucketPercent).
+  const plBase = monthlyPercentBase([sales, gross, pbitda, pat]);
+  const salesShare = bucketPercent(sales, view, effBucket, "flow", plBase);
+  const grossShare = bucketPercent(gross, view, effBucket, "flow", plBase);
+  const pbitdaShare = bucketPercent(pbitda, view, effBucket, "flow", plBase);
+  const patShare = bucketPercent(pat, view, effBucket, "flow", plBase);
   const changePct = salesCh.value != null && salesCh.prevValue != null && salesCh.prevValue > 0
     ? Math.round(((salesCh.value - salesCh.prevValue) / salesCh.prevValue) * 1000) / 10 : null;
   const changeLabel = view === "monthly" ? "MoM Sales" : view === "quarterly" ? "QoQ Sales" : "YoY Sales";

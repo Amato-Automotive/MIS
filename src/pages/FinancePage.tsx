@@ -466,7 +466,7 @@ export default function FinancePage() {
           <div>
             <h2 className="text-sm font-bold text-gray-800">Companies — group</h2>
             <p className="text-[11px] text-gray-500 mt-0.5">
-              Marks each company as part of the <b>Amato Group</b> or <b>Other</b>; the All Companies view filters on it.
+              Marks each company as part of the <b>Amato</b>, <b>RK</b>, <b>AM</b> or <b>JV</b> group, or <b>Other</b>; the All Companies view filters on it.
               A new company arrives from sync with no group and shows only under “All groups” until it is set here. Sync never changes a group.
             </p>
           </div>

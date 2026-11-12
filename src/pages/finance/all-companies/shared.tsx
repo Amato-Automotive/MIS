@@ -11,10 +11,11 @@ export type WcKey = "cash" | "inventory" | "debtors" | "current_assets" | "credi
 export interface SalesChannel { key: string; label: string; item_no: number; series: Series }
 
 /** An admin-set tag on each company; null until someone categorises it. */
-export type CompanyGroup = "amato" | "rk" | "am" | "jv" | "other";
+export type CompanyGroup = "amato" | "main" | "rk" | "am" | "jv" | "other";
 
 export const COMPANY_GROUP_LABELS: Record<CompanyGroup, string> = {
   amato: "Amato Group",
+  main: "Main Plant",
   rk: "RK Group",
   am: "AM Group",
   jv: "JV Group",

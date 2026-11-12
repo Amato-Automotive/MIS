@@ -367,7 +367,7 @@ def list_sheet_sources(db: Session = Depends(get_db), current_user: User = Depen
     ]
 
 
-COMPANY_GROUPS = ("amato", "rk", "am", "jv", "other")
+COMPANY_GROUPS = ("amato", "main", "rk", "am", "jv", "other")
 
 
 class CompanyUpdateIn(BaseModel):

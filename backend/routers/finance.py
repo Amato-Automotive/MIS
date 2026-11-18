@@ -470,6 +470,9 @@ def delete_group(key: str, db: Session = Depends(get_db), current_user: User = D
     untagged = db.execute(text(
         "SELECT COUNT(*) FROM sheet_sources WHERE module = :m AND company_group = :k"
     ), {"m": MODULE, "k": key}).scalar() or 0
+    # The FK below untags every company in this group without a word — so say who and which.
+    for src in db.query(SheetSource).filter(SheetSource.module == MODULE, SheetSource.company_group == key).all():
+        _log_change(db, current_user, "update", src, "company_group", key, None)
     db.delete(g)  # FK ON DELETE SET NULL untags its companies
     db.commit()
     return {"deleted": True, "companies_untagged": untagged}
@@ -487,6 +490,27 @@ class CompanyUpdateIn(BaseModel):
 # (the slug of its master-sheet tab), which access grants and finance_lines hang
 # off — so the tab keeps its old name, and sync, which sets label only on create
 # and never touches company_group, leaves both be.
+def _log_change(db: Session, user: User, action: str, source, field=None, old=None, new=None):
+    """One row in finance_change_log. Same transaction as the change itself."""
+    db.execute(text("""
+        INSERT INTO finance_change_log (user_id, user_email, action, source_id, company_label, field, old_value, new_value)
+        VALUES (:uid, :em, :act, :sid, :lbl, :f, :o, :n)
+    """), {"uid": str(user.id), "em": user.email, "act": action, "sid": str(source.id), "lbl": source.label,
+           "f": field, "o": None if old is None else str(old), "n": None if new is None else str(new)})
+
+
+@router.get("/change-log")
+def finance_change_log(limit: int = 100, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_module(db, current_user, MODULE_KEY)
+    _require_admin(current_user)
+    rows = db.execute(text("""
+        SELECT at, user_email, action, company_label, field, old_value, new_value
+        FROM finance_change_log ORDER BY at DESC LIMIT :n
+    """), {"n": max(1, min(limit, 500))}).fetchall()
+    return [{"at": r.at.isoformat(), "user": r.user_email, "action": r.action, "company": r.company_label,
+             "field": r.field, "old": r.old_value, "new": r.new_value} for r in rows]
+
+
 @router.patch("/sheet-sources/{source_id}")
 def update_sheet_source(source_id: str, body: CompanyUpdateIn, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_module(db, current_user, MODULE_KEY)
@@ -498,12 +522,18 @@ def update_sheet_source(source_id: str, body: CompanyUpdateIn, db: Session = Dep
         label = (body.label or "").strip()
         if not label:
             raise HTTPException(status_code=400, detail="Company name cannot be empty")
+        if label != source.label:
+            _log_change(db, current_user, "update", source, "label", source.label, label)
         source.label = label
     if "company_group" in body.model_fields_set:
         if body.company_group is not None and not db.get(FinanceCompanyGroup, body.company_group):
             raise HTTPException(status_code=400, detail="Unknown group — create it under Company groups first")
+        if body.company_group != source.company_group:
+            _log_change(db, current_user, "update", source, "company_group", source.company_group, body.company_group)
         source.company_group = body.company_group
     if "is_rollup" in body.model_fields_set and body.is_rollup is not None:
+        if body.is_rollup != bool(source.is_rollup):
+            _log_change(db, current_user, "update", source, "is_rollup", bool(source.is_rollup), body.is_rollup)
         source.is_rollup = body.is_rollup
     db.commit()
     return {"id": str(source.id), "sheet_id": source.sheet_id, "label": source.label,
@@ -518,6 +548,7 @@ def delete_sheet_source(source_id: str, db: Session = Depends(get_db), current_u
     if not source:
         raise HTTPException(status_code=404, detail="Company not found")
     count = db.execute(text("SELECT COUNT(*) FROM finance_lines WHERE sheet_source_id = :sid"), {"sid": str(source.id)}).scalar()
+    _log_change(db, current_user, "delete", source, None, None, f"{count or 0} rows")
     db.delete(source)  # ON DELETE CASCADE removes finance_lines + access rows
     db.commit()
     return {"deleted": True, "rows_deleted": count or 0}

@@ -165,15 +165,16 @@ function CashGenerationCard({ data }: { data: GenRow[] }) {
 }
 
 // ── The full statement, grouped by activity, mirroring the sheet ─────────────
-function StatementTable({ activities, view }: { activities: FinSubSection[]; view: TrendView }) {
+function StatementTable({ activities, view, bucket }: { activities: FinSubSection[]; view: TrendView; bucket: string }) {
   const cols = useMemo(() => {
     const all: FinPoint[] = [];
     for (const sub of activities) {
       for (const it of sub.line_items) all.push(...it.series);
       if (sub.total) all.push(...sub.total.series);
     }
-    return [...new Set(buildTimeline(all, "flow", view).map((x) => x.label))].slice(-8);
-  }, [activities, view]);
+    // The table stops at the picked period; the sheet's later columns are not shown.
+    return [...new Set(buildTimeline(all, "flow", view).map((x) => x.label))].filter((l) => keepUpTo(l, bucket)).slice(-8);
+  }, [activities, view, bucket]);
 
   const bucketOf = (series: FinPoint[]) => new Map(buildTimeline(series, "flow", view).map((x) => [x.label, x.value]));
 
@@ -354,7 +355,7 @@ export default function CashFlowView({ sheetSourceId, refreshNonce = 0 }: { shee
           <CashGenerationCard data={genData} />
 
           <Card title="Cash Flow Statement — detail" note="Grouped by activity, mirroring the sheet. Outflows shown negative; subtotals and activity nets are the sheet's own.">
-            <StatementTable activities={activities} view={view} />
+            <StatementTable activities={activities} view={view} bucket={effBucket} />
           </Card>
         </>
       )}

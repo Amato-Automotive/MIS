@@ -180,3 +180,29 @@ def test_income_tax_budget_below_unit_economics_belongs_to_budget():
     assert by_key["unit_economics/trim/unit_sold"]["amount"] == 110
     # And it sorts after the P&L block, not back at the top of Budget.
     assert by_key["budget/income_tax/accumlated_pbt"]["item_no"] > by_key["budget/pnl/revanue_income"]["item_no"]
+
+
+def test_current_liabilities_heading_with_a_figure_still_groups_the_rows_below():
+    """In four yearly tabs (Pune, SRN, RPAS, Noida) the Current Liabilities heading row
+    carries a number, so it was read as a line item and every liability below filed
+    under working_capital/... while the monthly tab filed it under
+    working_capital/current_liabilities/... — each liability then showed twice."""
+    rows = [
+        [4, "WORKING CAPITAL"],
+        [None, "Current Assets"],
+        [None, "Inventory", 500],
+        [None, "Total", 500],
+        [None, "Current Liabilities", 800],      # the stray figure
+        [None, "Sundry Creditors", 600],
+        [None, "Gst Payables", 200],
+        [None, "Total", 800],
+        [None, "Net Working Capital", -300],
+    ]
+    with_figure, _ = parse_finance_tab(_grid(rows), "AMATO RPAS")
+    rows[4] = [None, "Current Liabilities"]       # the clean heading the monthly tab has
+    clean, _ = parse_finance_tab(_grid(rows), "AMATO RPAS")
+    keys = _keys(with_figure)
+    assert "working_capital/current_liabilities/sundry_creditors" in keys
+    assert "working_capital/current_liabilities/total" in keys
+    assert "working_capital/sundry_creditors" not in keys
+    assert keys == _keys(clean)

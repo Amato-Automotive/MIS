@@ -805,7 +805,19 @@ _RECON_TIES = [
 ]
 
 
+def _values_by_period(db: Session, sid: str, line_key: str, pub=None) -> dict:
+    rows = db.execute(text(f"""
+        SELECT period_end_date, amount FROM finance_lines
+        WHERE sheet_source_id = :sid AND line_key = :lk AND amount IS NOT NULL AND {_PUBLISHED_SQL}
+    """), {"sid": sid, "lk": line_key, "pub": pub}).fetchall()
+    return {r.period_end_date: float(r.amount) for r in rows}
+
+
 def _reconciliation(db: Session, sid: str) -> list:
+    """Each tie at its latest period (`left`/`right`/`delta`/`period`), plus
+    `history`: the same tie at every period where BOTH sides have a figure. The page
+    reads the check as at the period picked in the dropdown from `history`, so
+    picking September never shows an October check."""
     out = []
     pub = _latest_published(db, [sid]).get(str(sid))
     for label, ln, lk, rn, rk in _RECON_TIES:
@@ -814,10 +826,17 @@ def _reconciliation(db: Session, sid: str) -> list:
         if lv is None or rv is None:
             continue
         tol = max(1.0, 0.005 * abs(lv))  # ₹1 or 0.5% of the value
+        left, right = _values_by_period(db, sid, lk, pub), _values_by_period(db, sid, rk, pub)
+        history = [{
+            "period": d.isoformat(), "left": left[d], "right": right[d],
+            "delta": round(left[d] - right[d], 2),
+            "matches": abs(left[d] - right[d]) <= max(1.0, 0.005 * abs(left[d])),
+        } for d in sorted(left.keys() & right.keys())]
         out.append({
             "label": label,
             "left": {"name": ln, "value": lv}, "right": {"name": rn, "value": rv},
             "delta": round(lv - rv, 2), "matches": abs(lv - rv) <= tol, "period": lp,
+            "history": history,
         })
     return out
 

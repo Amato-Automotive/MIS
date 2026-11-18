@@ -76,7 +76,8 @@ function UnitsSegmentBlock({ label, salesItems, prodItems, view, bucket }: {
     return s.filter((x) => keepUpTo(x.label, bucket)).map((x) => ({ label: x.label, Sales: x.value, Production: p.get(x.label) ?? 0 }));
   }, [salesTotal, prodTotal, view, bucket]);
 
-  const cols = useMemo(() => bucketLabelsOf(salesTotal, "flow", view).slice(-8), [salesTotal, view]);
+  // The detail table stops at the picked period; later sheet columns are not shown.
+  const cols = useMemo(() => bucketLabelsOf(salesTotal, "flow", view).filter((l) => keepUpTo(l, bucket)).slice(-8), [salesTotal, view, bucket]);
   const sold = bucketValue(salesTotal, "flow", view, bucket);
   const made = bucketValue(prodTotal, "flow", view, bucket);
 

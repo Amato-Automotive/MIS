@@ -144,9 +144,14 @@ export default function BudgetView({ sheetSourceId, refreshNonce = 0 }: { sheetS
 
   // Income tax is a running position (accumulated so far, deposited so far, still
   // owed), not a flow — a period shows its closing month, never a sum.
-  const taxLabels = useMemo(() => bucketLabelsOf(tax.flatMap((it) => it.series), "stock", view), [tax, view]);
+  // Both tables stop at the picked period — the sheet runs on to March, the page does not.
+  const taxLabels = useMemo(
+    () => bucketLabelsOf(tax.flatMap((it) => it.series), "stock", view).filter((l) => keepUpTo(l, effBucket)),
+    [tax, view, effBucket]);
 
-  const cashLabels = useMemo(() => bucketLabelsOf(cash.flatMap((it) => it.series), "flow", view), [cash, view]);
+  const cashLabels = useMemo(
+    () => bucketLabelsOf(cash.flatMap((it) => it.series), "flow", view).filter((l) => keepUpTo(l, effBucket)),
+    [cash, view, effBucket]);
 
   if (loading) return <div className="text-sm text-gray-500 py-10 text-center">Loading the budget…</div>;
   if (error) return <EmptyState>{error}</EmptyState>;

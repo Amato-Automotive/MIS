@@ -451,6 +451,14 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
         if label_norm == "TOTAL":
             emit(label, "total")
             sub_section = None  # a total closes its sub-section
+        elif section_key == "working_capital" and _cf_norm(label) in _SUBHEADERS["working_capital"]:
+            # "Current Liabilities" / "Current Assets" is a heading even when someone
+            # has typed a figure in its row. In four yearly tabs (Pune, SRN, RPAS,
+            # Noida) it carries one, so it was filed as a line item, the rows beneath
+            # it kept no sub-section, and every liability then existed twice: once
+            # under the monthly keys (working_capital/current_liabilities/…) and once
+            # under the yearly ones (working_capital/…). Same keys on both cadences.
+            sub_section = _slugify(label)
         elif not any_cell and section_key == "units":
             # §7 keeps the enclosing segment in the path so the two "Others"
             # groups stay distinct, and only structural labels may regroup —

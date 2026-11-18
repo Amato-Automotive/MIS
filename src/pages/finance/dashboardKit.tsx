@@ -19,7 +19,7 @@ import {
   GROSS_PROFIT_COLOR, NETT_PROFIT_COLOR, APPLICATION_COLOR,
 } from "./format";
 import { buildColorMap, computeDelta, type TrendView } from "./aggregate";
-import { keepUpTo, upToPicked } from "./pickedPeriod";
+import { keepUpTo, labelEnd, upToPicked } from "./pickedPeriod";
 
 // ── Analytics envelope types (v2) ────────────────────────────────────────────
 export interface FinPoint {
@@ -72,6 +72,26 @@ export interface ReconTie {
   left: { name: string; value: number };
   right: { name: string; value: number };
   delta: number; matches: boolean; period: string;
+  /** The same tie at every period both sides have a figure, oldest first. */
+  history?: { period: string; left: number; right: number; delta: number; matches: boolean }[];
+}
+
+/** The ties as at the picked period: each tie's latest check on or before that
+ *  period's last day. A tie with no check that early is left out. Ties from an
+ *  older API (no history) are returned as they are. */
+export function reconAsAt(ties: ReconTie[] | undefined, picked: string | undefined | null): ReconTie[] {
+  if (!ties) return [];
+  const cutoff = picked ? labelEnd(picked) : null;
+  if (!cutoff) return ties;
+  const out: ReconTie[] = [];
+  for (const t of ties) {
+    if (!t.history) { out.push(t); continue; }
+    const h = [...t.history].reverse().find((x) => x.period <= cutoff);
+    if (!h) continue;
+    out.push({ ...t, left: { ...t.left, value: h.left }, right: { ...t.right, value: h.right },
+      delta: h.delta, matches: h.matches, period: h.period });
+  }
+  return out;
 }
 export interface FinAnalytics {
   statement: string;
@@ -750,8 +770,9 @@ function LineItemTable({ group, kind, view, mode = "amount", bucket }:
     // buildTimeline over concatenated series emits one entry PER POINT in monthly
     // view (many rows share a month), so dedupe the labels to distinct periods.
     const distinct = [...new Set(buildTimeline(all, kind, view).map((x) => x.label))];
-    return distinct.slice(-8);
-  }, [group, kind, view]);
+    // The table stops at the picked period; the sheet's later columns are not shown.
+    return distinct.filter((l) => keepUpTo(l, bucket)).slice(-8);
+  }, [group, kind, view, bucket]);
 
   const bucketed = useMemo((): (Map<string, number | null> | null)[] =>
     rows.map((r) => (r.series.length ? new Map(buildTimeline(r.series, kind, view).map((x) => [x.label, x.value])) : null)),
@@ -1215,9 +1236,8 @@ export function CashCycleCard({ ratios, view, bucket }: { ratios: RatioCat[]; vi
 // ── Watch List — rule-based flags from the selected period's ratios + recon ──
 export function buildInsights(data: FinAnalytics, view: TrendView, bucket: string): { sev: number; text: string }[] {
   const out: { sev: number; text: string }[] = [];
-  for (const t of data.reconciliation ?? []) {
-    // Name the date: the check runs on each line's latest row, which can be a
-    // yearly-sheet column the period picker isn't showing.
+  for (const t of reconAsAt(data.reconciliation, bucket)) {
+    // Read as at the picked period, and name the date it was run on.
     if (!t.matches) out.push({ sev: 3, text: `${t.label} doesn't reconcile as at ${fmtAsAt(t.period)} — off by ${formatCompact(Math.abs(t.delta))}.` });
   }
   for (const c of data.ratios ?? []) for (const it of c.items) {
@@ -1255,14 +1275,15 @@ export function WatchListCard({ data, view, bucket }: { data: FinAnalytics; view
 }
 
 // ── Cross-statement reconciliation (compact status; expands on demand / if off) ─
-export function ReconciliationPanel({ ties }: { ties: ReconTie[] }) {
+export function ReconciliationPanel({ ties: allTies, bucket }: { ties: ReconTie[]; bucket?: string }) {
   const [open, setOpen] = useState(false);
+  const ties = useMemo(() => reconAsAt(allTies, bucket), [allTies, bucket]);
   if (!ties || ties.length === 0) return null;
   const off = ties.filter((t) => !t.matches).length;
   const allTied = off === 0;
   const show = open || !allTied;
   return (
-    <Card title="Reconciliation Checks" note="Cross-statement ties that must be equal if the accounts are consistent (latest period)."
+    <Card title="Reconciliation Checks" note="Cross-statement ties that must be equal if the accounts are consistent, as at the period picked above."
       right={<button onClick={() => setOpen((o) => !o)} className="text-[11px] font-semibold text-gray-500 hover:text-gray-700">{show ? "Hide" : "Show"} details</button>}>
       <div className="flex items-center gap-2 text-[13px] font-bold" style={{ color: allTied ? SUCCESS_COLOR : DANGER_COLOR }}>
         {allTied ? `✓ All ${ties.length} checks tied` : `✗ ${off} of ${ties.length} checks off`}

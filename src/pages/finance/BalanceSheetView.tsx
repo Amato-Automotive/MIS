@@ -111,7 +111,7 @@ export default function BalanceSheetView({ sheetSourceId, refreshNonce = 0 }: { 
           <SectionHeading>Financial Health</SectionHeading>
           <CashCycleCard ratios={data.ratios} view={view} bucket={effBucket} />
           <RatiosPanel ratios={data.ratios} view={view} bucket={effBucket} title="Balance Sheet Ratios" />
-          {data.reconciliation && data.reconciliation.length > 0 && <ReconciliationPanel ties={data.reconciliation} />}
+          {data.reconciliation && data.reconciliation.length > 0 && <ReconciliationPanel ties={data.reconciliation} bucket={effBucket} />}
         </>
       )}
 

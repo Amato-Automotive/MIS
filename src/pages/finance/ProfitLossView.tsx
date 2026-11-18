@@ -106,8 +106,8 @@ export default function ProfitLossView({ sheetSourceId, refreshNonce = 0 }: { sh
       <div className="grid gap-4 xl:grid-cols-2">
         <MoneyTrendCard title="Revenue & Profit" note="Sales bars with PAT overlaid, summed per period across the merged timeline (flow)."
           primary={sales} primaryLabel="Sales" kind="flow"
-          secondary={pat} secondaryLabel="PAT" view={view} />
-        <MarginTrendCard salesSeries={sales} grossSeries={gross} patSeries={pat} view={view} />
+          secondary={pat} secondaryLabel="PAT" view={view} bucket={effBucket} />
+        <MarginTrendCard salesSeries={sales} grossSeries={gross} patSeries={pat} view={view} bucket={effBucket} />
       </div>
 
       {plGroup && <ProfitBridgeCard group={plGroup} view={view} bucket={effBucket} />}

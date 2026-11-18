@@ -4,9 +4,10 @@
 import { useMemo } from "react";
 import { bucketLabelsOf } from "../dashboardKit";
 import type { TrendView } from "../aggregate";
-import { flowReading, slugOf } from "../budgetMath";
+import { compare, flowReading, slugOf } from "../budgetMath";
+import { sumTogether } from "./totals";
 import { AchievementBar, tone } from "../BudgetView";
-import { CompanyTd, PeriodEmpty, TableCard, Th, fmtMoney, rowBg, type ConsolidatedCompany } from "./shared";
+import { CompanyTd, PeriodEmpty, TOTAL_ROW, TableCard, Th, TotalLabelTd, fmtMoney, rowBg, type ConsolidatedCompany } from "./shared";
 
 // Revenue, then the two profit lines leadership tracks against plan.
 const COLUMNS = [
@@ -23,11 +24,25 @@ export default function BudgetSection({ companies, view, bucket, onJump }:
   const rows = useMemo(() => budgeted.map((c) => ({
     id: c.id,
     label: c.label,
+    rollup: c.is_rollup,
     cells: COLUMNS.map((col) => {
       const it = c.budget!.lines.find((li) => col.slugs.includes(slugOf(li.line_key)));
       return it ? flowReading(it.series, c.budget!.actuals[it.line_key]?.series, it.line_key, view, bucket) : null;
     }),
   })), [budgeted, view, bucket]);
+
+  // Total: actual and budget are added over the companies that have BOTH for the
+  // period, so a company with a budget but no actual yet (October not filled in)
+  // cannot drag the achievement down. Achievement = sum of actual / sum of budget.
+  const totalled = rows.filter((r) => !r.rollup);
+  const totals = COLUMNS.map((_, ci) => {
+    const t = sumTogether(totalled.map((r) => [r.cells[ci]?.actual, r.cells[ci]?.budget]));
+    return {
+      n: t.n,
+      of: totalled.filter((r) => r.cells[ci]?.budget != null).length,
+      reading: t.n > 0 ? compare(t.values[1] ?? null, t.values[0] ?? null, false) : null,
+    };
+  });
 
   const latest = useMemo(() => {
     const labels = bucketLabelsOf(budgeted.flatMap((c) => c.budget!.lines.flatMap((li) => li.series)), "flow", view);
@@ -44,7 +59,7 @@ export default function BudgetSection({ companies, view, bucket, onJump }:
   return (
     <TableCard footer={
       <>Budget is from each company's Budget block; actual is what its P&L reports for {bucket} (Revenue = Sales Accounts).
-        Achievement = actual ÷ budget — the tick marks 100%, green is ahead of plan. Same reading as each company's Budget tab.
+        Achievement = actual ÷ budget — the tick marks 100%, green is ahead of plan. Same reading as each company's Budget tab. The Total adds actual and budget over the companies that have both for {bucket}, so its achievement is total actual ÷ total budget.
         {without.length > 0 && <> No budget in the sheet yet: {without.join(", ")}.</>}</>
     }>
       <thead>
@@ -65,7 +80,7 @@ export default function BudgetSection({ companies, view, bucket, onJump }:
       <tbody>
         {rows.map((r, i) => (
           <tr key={r.id} className={rowBg(i)}>
-            <CompanyTd label={r.label} />
+            <CompanyTd label={r.label} rollup={r.rollup} />
             {r.cells.map((cell, ci) => [
               <td key={`${ci}-v`} className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
                 <div className="text-[13px] font-semibold" style={{ color: cell ? tone(cell) : undefined }}>{fmtMoney(cell?.actual ?? null)}</div>
@@ -78,6 +93,23 @@ export default function BudgetSection({ companies, view, bucket, onJump }:
           </tr>
         ))}
       </tbody>
+      {totalled.length > 0 && (
+        <tfoot>
+          <tr className={TOTAL_ROW}>
+            <TotalLabelTd count={totalled.length} excluded={rows.length - totalled.length} />
+            {totals.map((t, ci) => [
+              <td key={`${ci}-v`} className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
+                <div className="text-[13px] font-bold" style={{ color: t.reading ? tone(t.reading) : undefined }}>{fmtMoney(t.reading?.actual ?? null)}</div>
+                <div className="text-[11px] text-gray-500">of {fmtMoney(t.reading?.budget ?? null)}</div>
+                {t.reading && t.n < t.of && <div className="text-[10px] text-gray-500">{t.n} of {t.of} with an actual</div>}
+              </td>,
+              <td key={`${ci}-a`} className="px-4 py-3">
+                {t.reading ? <AchievementBar r={t.reading} /> : <span className="text-[11px] text-gray-400">—</span>}
+              </td>,
+            ])}
+          </tr>
+        </tfoot>
+      )}
     </TableCard>
   );
 }

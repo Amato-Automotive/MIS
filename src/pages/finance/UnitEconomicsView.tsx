@@ -10,6 +10,7 @@ import {
   type FinAnalytics, type FinSubSection,
 } from "./dashboardKit";
 import { buildColorMap, type TrendView } from "./aggregate";
+import { keepUpTo } from "./pickedPeriod";
 import { formatINR, formatKpi, GRID_LINE_COLOR, AXIS_TEXT_COLOR, SUCCESS_COLOR, DANGER_COLOR, SOURCES_COLOR } from "./format";
 import ChartLegend from "./shared/ChartLegend";
 import { productEconomics, productName, seriesOf, type ProductEconomics } from "./unitEconomics";
@@ -186,11 +187,12 @@ export default function UnitEconomicsView({ sheetSourceId, refreshNonce = 0 }: {
 
   // Margin by product over the periods — the one trend: is each product getting
   // more or less profitable per unit?
-  const trend = useMemo(() => bucketLabels.map((label) => {
+  // Ends at the picked period, not at the last column in the sheet.
+  const trend = useMemo(() => bucketLabels.filter((l) => keepUpTo(l, effBucket)).map((label) => {
     const row: Record<string, number | string | null> = { label };
     for (const p of products) row[p.key!] = productEconomics(p, view, label).margin;
     return row;
-  }), [bucketLabels, products, view]);
+  }), [bucketLabels, products, view, effBucket]);
 
   if (loading) return <div className="text-sm text-gray-500 py-10 text-center">Loading unit economics…</div>;
   if (error) return <EmptyState>{error}</EmptyState>;

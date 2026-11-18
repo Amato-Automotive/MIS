@@ -1,7 +1,7 @@
 // BUDGET tab — finance's budget against what the company actually did.
 //
-// The sheet's Budget block (below Cash Flow) holds three budgets: a P&L ladder,
-// a cash-flow plan and sale units. It carries no actuals, so each line is
+// The sheet's Budget block (below Cash Flow) holds four: a P&L ladder, a
+// cash-flow plan, sale units and (below Unit Economics) an income-tax position. It carries no actuals, so each line is
 // compared with the sheet's own reported figures — Sales Accounts, Gross Margin,
 // PBITDA, PAT, closing cash, §7 units — matched server-side; the "actual from"
 // note under each line says which.
@@ -9,10 +9,11 @@ import { useEffect, useMemo, useState } from "react";
 import { ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
 import { useAuth } from "@/context/AuthContext";
 import {
-  Card, DashboardControls, EmptyState, SectionHeading, bucketLabelsOf, mergedLabels, buildTimeline,
+  Card, DashboardControls, EmptyState, SectionHeading, bucketLabelsOf, bucketValue, mergedLabels, buildTimeline,
   type FinAnalytics, type FinLineItem, type FinPoint,
 } from "./dashboardKit";
 import type { TrendView } from "./aggregate";
+import { keepUpTo } from "./pickedPeriod";
 import {
   formatINR, formatKpi, GRID_LINE_COLOR, AXIS_TEXT_COLOR, SUCCESS_COLOR, DANGER_COLOR, REVENUE_COLOR,
   NEUTRAL_COLOR, SOURCES_COLOR, APPLICATION_COLOR,
@@ -33,6 +34,9 @@ export const tone = (r: VarianceReading) => (r.favourable == null ? NEUTRAL_COLO
 // The sheet's own label, minus its one typo — "Revanue/Income" would sit in the
 // headline tile otherwise. Keys keep the sheet's spelling.
 export const displayLabel = (it: FinLineItem) => (slugOf(it.line_key) === "revanue_income" ? "Revenue / Income" : it.line_label.trim());
+
+// The sheet spells "Accumlated" and pads one label with spaces; keys keep its spelling.
+const taxLabel = (it: FinLineItem) => it.line_label.trim().replace(/^Accumlated/i, "Accumulated");
 
 const HEADLINE = ["revanue_income", "revenue_income", "gross_profit", "pbitda", "pat"];
 
@@ -101,14 +105,27 @@ export default function BudgetView({ sheetSourceId, refreshNonce = 0 }: { sheetS
   const pnl = items("pnl");
   const cash = items("cash_flow");
   const units = items("units");
+  const tax = items("income_tax");
   const actuals = data?.actuals ?? {};
   const actualOf = (it: FinLineItem) => actuals[it.line_key];
 
   // The picker offers the periods the BUDGET covers — comparing against a month
   // finance never budgeted would read as a 0% achievement.
-  const budgetPoints = useMemo(() => [...pnl, ...cash, ...units].flatMap((it) => it.series), [pnl, cash, units]);
+  const budgetPoints = useMemo(() => [...pnl, ...cash, ...units, ...tax].flatMap((it) => it.series), [pnl, cash, units, tax]);
   const bucketLabels = useMemo(() => bucketLabelsOf(budgetPoints, "flow", view), [budgetPoints, view]);
-  const effBucket = bucketLabels.includes(bucket) ? bucket : (bucketLabels[bucketLabels.length - 1] ?? "");
+  // The sheet budgets months ahead of the results, so the newest budgeted month is
+  // usually one nobody has reported yet — opening there reads as a screen of "—".
+  // Default to the newest period that has an ACTUAL for a P&L line; fall back to
+  // the newest budgeted one when nothing has been reported at all.
+  const pnlActualLabels = useMemo(
+    () => new Set(bucketLabelsOf(pnl.flatMap((it) => data?.actuals?.[it.line_key]?.series ?? []), "flow", view)),
+    [pnl, data, view]);
+  const unitActualLabels = useMemo(
+    () => new Set(bucketLabelsOf(units.flatMap((it) => data?.actuals?.[it.line_key]?.series ?? []), "flow", view)),
+    [units, data, view]);
+  const lastWith = (have: Set<string>) => [...bucketLabels].reverse().find((l) => have.has(l)) ?? null;
+  const latestActual = lastWith(pnlActualLabels);
+  const effBucket = bucketLabels.includes(bucket) ? bucket : (latestActual ?? bucketLabels[bucketLabels.length - 1] ?? "");
 
   const pnlRows = pnl.map((it) => ({ it, r: flowReading(it.series, actualOf(it)?.series, it.line_key, view, effBucket) }));
   const revenueRow = pnlRows.find((x) => ["revanue_income", "revenue_income"].includes(slugOf(x.it.line_key)));
@@ -122,8 +139,12 @@ export default function BudgetView({ sheetSourceId, refreshNonce = 0 }: { sheetS
     const bm = new Map(b.map((x) => [x.label, x.value]));
     const am = new Map(a.map((x) => [x.label, x.value]));
     // Only the periods the budget covers, in date order.
-    return mergedLabels([b]).map((label) => ({ label, budget: bm.get(label) ?? null, actual: am.get(label) ?? null }));
-  }, [trendItem, view, data]);
+    return mergedLabels([b]).filter((l) => keepUpTo(l, effBucket)).map((label) => ({ label, budget: bm.get(label) ?? null, actual: am.get(label) ?? null }));
+  }, [trendItem, view, data, effBucket]);
+
+  // Income tax is a running position (accumulated so far, deposited so far, still
+  // owed), not a flow — a period shows its closing month, never a sum.
+  const taxLabels = useMemo(() => bucketLabelsOf(tax.flatMap((it) => it.series), "stock", view), [tax, view]);
 
   const cashLabels = useMemo(() => bucketLabelsOf(cash.flatMap((it) => it.series), "flow", view), [cash, view]);
 
@@ -148,6 +169,16 @@ export default function BudgetView({ sheetSourceId, refreshNonce = 0 }: { sheetS
       {pnl.length > 0 && (
         <>
           <SectionHeading accent={REVENUE_COLOR}>Budget vs Actual · {effBucket || "—"}</SectionHeading>
+          {!pnlActualLabels.has(effBucket) && (
+            <EmptyState>
+              No actuals are in the sheet for {effBucket || "this period"} yet — only the budget is.
+              {latestActual && (
+                <> <button onClick={() => setBucket(latestActual)} className="font-semibold text-brand-orange hover:underline">
+                  Show {latestActual}
+                </button> (the latest with actuals)</>
+              )}
+            </EmptyState>
+          )}
           {headline.length > 0 && (
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {headline.slice(0, 4).map(({ it, r }) => <BudgetTile key={it.line_key} label={displayLabel(it)} r={r} />)}
@@ -261,8 +292,66 @@ export default function BudgetView({ sheetSourceId, refreshNonce = 0 }: { sheetS
                 );
               })}
             </div>
+            {!unitActualLabels.has(effBucket) && (
+              <p className="text-[11px] text-amber-700 mt-3">
+                No units sold are reported (§7 Units) for {effBucket || "this period"} yet
+                {lastWith(unitActualLabels) && (
+                  <> — the latest is {" "}
+                    <button onClick={() => setBucket(lastWith(unitActualLabels)!)} className="font-semibold text-brand-orange hover:underline">
+                      {lastWith(unitActualLabels)}
+                    </button></>
+                )}.
+              </p>
+            )}
             <p className="text-[11px] text-gray-500 mt-4">Products with no budgeted units in the sheet (blank rows) are not shown.</p>
           </Card>
+        </>
+      )}
+
+      {tax.length > 0 && taxLabels.length > 0 && (
+        <>
+          <SectionHeading accent={DANGER_COLOR}>Income Tax Budget · {effBucket || "—"}</SectionHeading>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {tax.map((it) => {
+              const v = bucketValue(it.series, "stock", view, effBucket);
+              return (
+                <div key={it.line_key} className="bg-white border border-[#EAE3D6] rounded-2xl p-4">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{taxLabel(it)}</div>
+                  <div className="text-2xl font-bold text-gray-800 tracking-tight mt-1" title={v != null ? formatINR(v) : undefined}>
+                    {v != null ? formatKpi(v) : "—"}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <TableCard footer={
+            <>Running position as finance keeps it in the sheet: a quarter or year shows its last month, not a sum.
+              Pending tax liability is the tax accumulated so far less TDS/TCS and advance tax already deposited.
+              The highlighted column is {effBucket}.</>
+          }>
+            <thead>
+              <tr className="border-b border-[#EAE3D6] bg-[#FAF7F1]">
+                <Th align="left">Line</Th>
+                {taxLabels.map((l) => <Th key={l} className={l === effBucket ? "bg-[#F3EEE4]" : ""}>{l}</Th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {tax.map((it, i) => (
+                <tr key={it.line_key} className={rowBg(i)}>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-[13px] font-semibold text-gray-800">{taxLabel(it)}</td>
+                  {taxLabels.map((l) => {
+                    const v = bucketValue(it.series, "stock", view, l);
+                    return (
+                      <td key={l} className={`px-4 py-2.5 text-right text-[13px] tabular-nums ${l === effBucket ? "bg-[#F3EEE4]/60" : ""} ${v == null ? "text-gray-400" : "text-gray-800 font-semibold"}`}
+                        title={v != null ? formatINR(v) : undefined}>
+                        {fmtMoney(v)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </TableCard>
         </>
       )}
 
@@ -283,10 +372,12 @@ export default function BudgetView({ sheetSourceId, refreshNonce = 0 }: { sheetS
             <tbody>
               {cash.flatMap((it) => {
                 const actual = actualOf(it);
-                // Finance now types actuals into the block themselves and marks the row
-                // "(Actual)" — a BUDGET tag beside it would contradict its own name.
+                // Rows carry finance's own wording; only an ACTUAL pulled in from elsewhere in
+                // the sheet is tagged. A "Budget" tag on every other row said nothing the
+                // section heading does not.
                 const label = it.line_label.trim();
-                const rows = [{ key: it.line_key, label, series: it.series, sub: /\(\s*actual\s*\)/i.test(label) ? null : "Budget" }];
+                const rows: { key: string; label: string; series: FinPoint[]; sub: string | null }[] =
+                  [{ key: it.line_key, label, series: it.series, sub: null }];
                 if (actual) rows.push({ key: `${it.line_key}#actual`, label, series: actual.series, sub: "Actual" });
                 return rows;
               }).map((row, i) => (

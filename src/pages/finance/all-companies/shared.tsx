@@ -10,25 +10,16 @@ export type WcKey = "cash" | "inventory" | "debtors" | "current_assets" | "credi
 
 export interface SalesChannel { key: string; label: string; item_no: number; series: Series }
 
-/** An admin-set tag on each company; null until someone categorises it. */
-export type CompanyGroup = "amato" | "main" | "rk" | "am" | "jv" | "other";
-
-export const COMPANY_GROUP_LABELS: Record<CompanyGroup, string> = {
-  amato: "Amato Group",
-  main: "Main Plant",
-  rk: "RK Group",
-  am: "AM Group",
-  jv: "JV Group",
-  other: "Other",
-};
-
-export const COMPANY_GROUP_OPTIONS = (Object.keys(COMPANY_GROUP_LABELS) as CompanyGroup[])
-  .map((g) => ({ value: g, label: COMPANY_GROUP_LABELS[g] }));
+/** A finance_company_groups key, set by an admin per company; null until someone
+ *  categorises it. The list of groups is data (useCompanyGroups), not a type. */
+export type CompanyGroup = string;
 
 export interface ConsolidatedCompany {
   id: string;
   label: string;
   company_group: CompanyGroup | null;
+  /** A roll-up of other companies (AMATO TOTAL): shown as its own row, left out of every Total. */
+  is_rollup: boolean;
   /** The sheet tab's name ("AMATO SRN") — short enough for a column header. */
   short_label: string;
   pl: { sales: Series; gross: Series; pbitda: Series; pat: Series };
@@ -38,7 +29,7 @@ export interface ConsolidatedCompany {
   sales_total: Series;
   ratios: RatioCat[];
   /** The P&L part of the company's Budget block, or null when its sheet has none. */
-  budget: { lines: FinLineItem[]; actuals: Record<string, { basis: string; series: Series }> } | null;
+  budget: { lines: FinLineItem[]; actuals: Record<string, { basis: string; series: Series }>; tax: FinLineItem[] } | null;
 }
 
 // formatCompact deliberately returns an unsigned magnitude, so a loss-making
@@ -78,8 +69,53 @@ export function MoneyTd({ value, sub }: { value: number | null; sub?: string | n
 // of Amato Group"). The name may wrap — so it sits on one line where the table
 // has room and folds only in a wide one (Working Capital) instead of pushing
 // the figures off the edge.
-export function CompanyTd({ label, className = "" }: { label: string; className?: string }) {
-  return <td className={`px-4 py-3 text-[13px] font-semibold text-gray-800 leading-snug min-w-[11rem] ${className}`}>{label}</td>;
+export function CompanyTd({ label, className = "", rollup = false }: { label: string; className?: string; rollup?: boolean }) {
+  return (
+    <td className={`px-4 py-3 text-[13px] font-semibold text-gray-800 leading-snug min-w-[11rem] ${className}`}>
+      {label}
+      {rollup && (
+        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500"
+          title="A roll-up of other companies' figures — shown, but not added into the Total">
+          Roll-up · not in total
+        </div>
+      )}
+    </td>
+  );
+}
+
+// ── Total rows ───────────────────────────────────────────────────────────────
+// What a Total adds, and over which companies, is decided in totals.ts. These
+// only draw it.
+
+/** Companies a Total may add: roll-ups are already the sum of other rows. */
+export const totalled = (companies: ConsolidatedCompany[]) => companies.filter((c) => !c.is_rollup);
+
+export const TOTAL_ROW = "border-t-2 border-[#D9CFBC] bg-[#F3EEE4]";
+
+/** The label cell of a Total row. */
+export function TotalLabelTd({ count, excluded = 0 }: { count: number; excluded?: number }) {
+  return (
+    <td className="px-4 py-3 text-[13px] font-bold text-gray-900 min-w-[11rem]">
+      Total
+      <div className="text-[11px] font-medium text-gray-500">
+        {count} {count === 1 ? "company" : "companies"}{excluded > 0 && " · excl. roll-up"}
+      </div>
+    </td>
+  );
+}
+
+/** A Total money cell. `of` is how many companies the total covers — when only
+ *  some of them reported a figure, the cell says how many. */
+export function TotalMoneyTd({ value, n, of, sub }: { value: number | null; n: number; of: number; sub?: string | null }) {
+  return (
+    <td className="px-4 py-3 text-right align-middle">
+      <div className={`text-[13px] font-bold tabular-nums ${value == null ? "text-gray-400" : "text-gray-900"}`} title={fmtExact(value)}>
+        {fmtMoney(value)}
+      </div>
+      {sub && <div className="text-[11px] text-gray-500 tabular-nums">{sub}</div>}
+      {value != null && n < of && <div className="text-[10px] text-gray-500">{n} of {of} reported</div>}
+    </td>
+  );
 }
 
 /** "12.3%" of a total — "0.0%" rather than "−0.0%" for a few rupees below zero. */

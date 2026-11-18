@@ -86,6 +86,16 @@ class PlantToDepotSale(Base):
     updated_at      = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class FinanceCompanyGroup(Base):
+    """Admin-managed list of groups a finance company can be tagged with."""
+    __tablename__ = "finance_company_groups"
+
+    key        = Column(String(40), primary_key=True)  # stable identity; what sheet_sources stores
+    label      = Column(String(80), nullable=False)    # display name, freely renamable
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
 class SheetSource(Base):
     __tablename__ = "sheet_sources"
 
@@ -97,7 +107,10 @@ class SheetSource(Base):
     quarter       = Column(String(2), nullable=True)
     month         = Column(Integer, nullable=True)  # OE visit plans: one sheet per (calendar_year, month)
     kind          = Column(String(10), nullable=True)  # finance v3: 'master' | 'company'
-    company_group = Column(String(10), nullable=True)  # finance companies: 'amato' | 'main' | 'rk' | 'am' | 'jv' | 'other' | NULL (untagged)
+    # finance companies: a finance_company_groups.key, or NULL (not yet categorised).
+    company_group = Column(String(40), ForeignKey("finance_company_groups.key", onupdate="CASCADE", ondelete="SET NULL"), nullable=True)
+    # finance companies: a roll-up of other companies (e.g. AMATO TOTAL) — shown, but left out of totals
+    is_rollup     = Column(Boolean, nullable=False, default=False, server_default="false")
     created_by    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at    = Column(TIMESTAMP(timezone=True), server_default=func.now())
 

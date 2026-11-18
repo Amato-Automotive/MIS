@@ -10,6 +10,7 @@ import {
 } from "./dashboardKit";
 import { SOURCES_COLOR, APPLICATION_COLOR, GRID_LINE_COLOR, AXIS_TEXT_COLOR } from "./format";
 import type { TrendView } from "./aggregate";
+import { keepUpTo } from "./pickedPeriod";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const fmtQty = (n: number) => Math.round(n).toLocaleString("en-IN");
@@ -71,8 +72,9 @@ function UnitsSegmentBlock({ label, salesItems, prodItems, view, bucket }: {
   const trendData = useMemo(() => {
     const s = buildTimeline(salesTotal, "flow", view);
     const p = new Map(buildTimeline(prodTotal, "flow", view).map((x) => [x.label, x.value]));
-    return s.map((x) => ({ label: x.label, Sales: x.value, Production: p.get(x.label) ?? 0 }));
-  }, [salesTotal, prodTotal, view]);
+    // Ends at the picked period, not at the last column in the sheet.
+    return s.filter((x) => keepUpTo(x.label, bucket)).map((x) => ({ label: x.label, Sales: x.value, Production: p.get(x.label) ?? 0 }));
+  }, [salesTotal, prodTotal, view, bucket]);
 
   const cols = useMemo(() => bucketLabelsOf(salesTotal, "flow", view).slice(-8), [salesTotal, view]);
   const sold = bucketValue(salesTotal, "flow", view, bucket);

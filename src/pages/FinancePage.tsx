@@ -13,7 +13,9 @@ import BudgetView from "@/pages/finance/BudgetView";
 import UnitEconomicsView from "@/pages/finance/UnitEconomicsView";
 import CashFlowView from "@/pages/finance/CashFlowView";
 import ConsolidatedView from "@/pages/finance/ConsolidatedView";
-import { COMPANY_GROUP_OPTIONS, type CompanyGroup } from "@/pages/finance/all-companies/shared";
+import type { CompanyGroup } from "@/pages/finance/all-companies/shared";
+import CompanyGroupsManager from "@/pages/finance/CompanyGroupsManager";
+import { useCompanyGroups } from "@/pages/finance/useCompanyGroups";
 import { StickyLeadingContext } from "@/pages/finance/dashboardKit";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -27,7 +29,7 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-interface SheetSourceItem { id: string; sheet_id: string; label: string; company_group: CompanyGroup | null; created_at: string; }
+interface SheetSourceItem { id: string; sheet_id: string; label: string; company_group: CompanyGroup | null; is_rollup: boolean; created_at: string; }
 interface MasterItem { id: string; sheet_id: string; label: string; last_synced_at: string | null; last_sync_status: string | null; }
 interface SyncResult {
   sync_id: string; companies?: number; rows_total: number; rows_inserted: number; rows_updated: number;
@@ -47,6 +49,7 @@ export default function FinancePage() {
   const toast = useToast();
 
   const [sources, setSources] = useState<SheetSourceItem[]>([]);
+  const companyGroups = useCompanyGroups();
   const [selectedId, setSelectedId] = useState<string>("");
   const [activeTab, setActiveTab] = useState<Tab>("balance_sheet");
   const [refreshNonce, setRefreshNonce] = useState(0); // bumped after a sync to refetch the active view
@@ -245,6 +248,26 @@ export default function FinancePage() {
       setRefreshNonce((n) => n + 1);
     } catch (e) {
       toast.error("Couldn't set company group", e instanceof Error ? e.message : "Please try again.");
+    }
+  };
+
+  // A roll-up (e.g. Consolidated of Amato Group) is the sum of other companies, so
+  // the All Companies Total rows must not add it in a second time.
+  const handleSetRollup = async (source: SheetSourceItem, isRollup: boolean) => {
+    try {
+      const res = await fetch(`${API_URL}/finance/sheet-sources/${source.id}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ is_rollup: isRollup }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      await loadSources();
+      setRefreshNonce((n) => n + 1);
+    } catch (e) {
+      toast.error("Couldn't update the roll-up setting", e instanceof Error ? e.message : "Please try again.");
     }
   };
 
@@ -461,12 +484,21 @@ export default function FinancePage() {
         </div>
       )}
 
+      {isAdmin && onSheetsTab && (
+        <CompanyGroupsManager
+          groups={companyGroups.groups}
+          onChanged={() => { companyGroups.reload(); loadSources(); setRefreshNonce((n) => n + 1); }}
+        />
+      )}
+
       {isAdmin && onSheetsTab && sources.length > 0 && (
         <div className="no-print bg-white border border-[#EAE3D6] rounded-2xl p-5 flex flex-col gap-3">
           <div>
             <h2 className="text-sm font-bold text-gray-800">Companies — group</h2>
             <p className="text-[11px] text-gray-500 mt-0.5">
-              Marks each company as part of the <b>Amato</b>, <b>Main Plant</b>, <b>RK</b>, <b>AM</b> or <b>JV</b> group, or <b>Other</b>; the All Companies view filters on it.
+              Places each company in one of the groups above; the All Companies view filters on it. Tick <b>Roll-up</b> on a company
+              that is itself the sum of others (such as Consolidated of Amato Group): it stays in the tables but is left out of the
+              Total rows, so nothing is counted twice.
               A new company arrives from sync with no group and shows only under “All groups” until it is set here. Sync never changes a group.
             </p>
           </div>
@@ -477,13 +509,21 @@ export default function FinancePage() {
                   <div className="text-[13px] font-semibold text-gray-800 truncate">{s.label}</div>
                   <div className="text-[11px] text-gray-500 truncate">{s.sheet_id.replace(/_/g, " ").toUpperCase()}</div>
                 </div>
+                <div className="flex items-center gap-4 shrink-0">
+                <label className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-600 shrink-0 cursor-pointer select-none"
+                  title="A roll-up of other companies: shown, but not added into the Total rows">
+                  <input type="checkbox" checked={s.is_rollup} onChange={(e) => handleSetRollup(s, e.target.checked)}
+                    className="accent-orange-500" />
+                  Roll-up
+                </label>
                 <Select
                   value={s.company_group ?? ""}
                   onChange={(v) => handleSetCompanyGroup(s, (v || null) as CompanyGroup | null)}
                   placeholder="Not set"
-                  options={[{ value: "", label: "Not set" }, ...COMPANY_GROUP_OPTIONS]}
+                  options={[{ value: "", label: "Not set" }, ...companyGroups.options]}
                   className="min-w-[150px] shrink-0"
                 />
+                </div>
               </div>
             ))}
           </div>

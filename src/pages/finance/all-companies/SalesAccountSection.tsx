@@ -11,9 +11,10 @@ import type { TrendView } from "../aggregate";
 import { NEUTRAL_COLOR } from "../format";
 import ChartLegend from "../shared/ChartLegend";
 import {
-  BarRow, CompanyTd, MoneyTd, PeriodEmpty, TableCard, Th, TipBox, fmtMoney, pctOf, rowBg,
+  BarRow, CompanyTd, MoneyTd, PeriodEmpty, TOTAL_ROW, TableCard, Th, TipBox, TotalLabelTd, TotalMoneyTd, fmtMoney, pctOf, rowBg,
   type ConsolidatedCompany,
 } from "./shared";
+import { sumColumn } from "./totals";
 
 // The slice for a period the sheet gives a Sales total for but no channel split
 // (some yearly columns) — drawn as its own neutral slice rather than a bar that
@@ -29,6 +30,7 @@ const CHANNEL_PALETTE = ["#B65A3A", "#8B6A45", "#4E6575", "#738A5A", "#3A4E5C", 
 interface SalesRow {
   id: string;
   label: string;
+  rollup: boolean;
   total: number | null;
   byKey: Map<string, number | null>;
   unsplit: number | null;
@@ -59,7 +61,7 @@ export default function SalesAccountSection({ companies, view, bucket, onJump }:
     const byKey = new Map(c.sales_channels.map((ch) => [ch.key, bucketValue(ch.series, "flow", view, bucket)] as const));
     const split = [...byKey.values()].reduce<number>((s, v) => s + (v ?? 0), 0);
     const unsplit = total != null && Math.abs(total - split) > Math.abs(total) * 0.005 ? total - split : null;
-    return { id: c.id, label: c.label, total, byKey, unsplit };
+    return { id: c.id, label: c.label, rollup: c.is_rollup, total, byKey, unsplit };
   }), [companies, view, bucket]);
 
   const latest = useMemo(() => {
@@ -72,6 +74,14 @@ export default function SalesAccountSection({ companies, view, bucket, onJump }:
     .filter((r): r is SalesRow & { total: number } => r.total != null && r.total > 0)
     .sort((a, b) => b.total - a.total), [rows]);
   const maxTotal = ranked[0]?.total ?? 0;
+
+  // Total: each channel is added on its own and set against total Sales, so the
+  // shares in the total row are the group's mix. A company with no such channel
+  // adds nothing to it. Roll-ups are left out (totals.ts).
+  const totalled = rows.filter((r) => !r.rollup);
+  const totalSales = sumColumn(totalled.map((r) => r.total));
+  const channelTotals = new Map(channels.map((ch) => [ch.key, sumColumn(totalled.map((r) => r.byKey.get(ch.key)))] as const));
+  const unsplitTotal = sumColumn(totalled.map((r) => r.unsplit));
   const anyUnsplit = rows.some((r) => r.unsplit != null && r.unsplit > 0);
 
   if (rows.every((r) => r.total == null && [...r.byKey.values()].every((v) => v == null))) {
@@ -142,7 +152,7 @@ export default function SalesAccountSection({ companies, view, bucket, onJump }:
         <tbody>
           {rows.map((r, i) => (
             <tr key={r.id} className={rowBg(i)}>
-              <CompanyTd label={r.label} />
+              <CompanyTd label={r.label} rollup={r.rollup} />
               <MoneyTd value={r.total} />
               {channels.map((ch) => {
                 const v = r.byKey.get(ch.key) ?? null;
@@ -152,6 +162,19 @@ export default function SalesAccountSection({ companies, view, bucket, onJump }:
             </tr>
           ))}
         </tbody>
+        {totalled.length > 0 && (
+          <tfoot>
+            <tr className={TOTAL_ROW}>
+              <TotalLabelTd count={totalled.length} excluded={rows.length - totalled.length} />
+              <TotalMoneyTd {...totalSales} of={totalled.length} />
+              {channels.map((ch) => {
+                const t = channelTotals.get(ch.key)!;
+                return <TotalMoneyTd key={ch.key} {...t} of={totalled.length} sub={pctOf(t.value, totalSales.value)} />;
+              })}
+              {anyUnsplit && <TotalMoneyTd {...unsplitTotal} of={totalled.length} sub={pctOf(unsplitTotal.value, totalSales.value)} />}
+            </tr>
+          </tfoot>
+        )}
       </TableCard>
     </div>
   );

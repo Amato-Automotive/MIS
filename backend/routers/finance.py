@@ -15,9 +15,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import text, bindparam
+from sqlalchemy import text, bindparam, func
 from database import get_db
-from models import SheetSource, SyncLog, User
+from models import FinanceCompanyGroup, SheetSource, SyncLog, User
 from routers.auth import get_current_user
 from services.google_sheets import extract_sheet_id
 from services.finance_sync import fetch_and_parse_finance_by_company, _slugify
@@ -53,6 +53,7 @@ _RATIO_SUB_LABELS = {
 _SUB_LABELS = {
     # Budget's three blocks
     "pnl": "Profit & Loss Budget", "cash_flow": "Cash Flow Budget", "units": "Sale Units Budget",
+    "income_tax": "Income Tax Budget",
     "sources_of_funds": "Sources of Funds",
     "application_of_funds": "Application of Funds",
     "current_assets": "Current Assets",
@@ -361,19 +362,125 @@ def list_sheet_sources(db: Session = Depends(get_db), current_user: User = Depen
     )
     return [
         {"id": str(s.id), "sheet_id": s.sheet_id, "label": s.label, "company_group": s.company_group,
+         "is_rollup": bool(s.is_rollup),
          "created_at": s.created_at.isoformat() if s.created_at else None,
          "last_synced_at": None, "last_sync_status": None}
         for s in sources if str(s.id) in allowed_ids
     ]
 
 
-COMPANY_GROUPS = ("amato", "main", "rk", "am", "jv", "other")
+# ── Company groups (admin-managed) ───────────────────────────────────────────
+# The list lives in finance_company_groups. A company stores a group's `key`;
+# the `label` is display-only and can be renamed without touching any company.
+# Deleting a group leaves its companies untagged (FK ON DELETE SET NULL) — the
+# same "not yet categorised" state a freshly synced company starts in.
+class GroupIn(BaseModel):
+    label: str
+
+
+class GroupPatch(BaseModel):
+    label: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+def _group_dict(g: FinanceCompanyGroup, companies: Optional[int] = None) -> dict:
+    return {"key": g.key, "label": g.label, "sort_order": g.sort_order, "companies": companies}
+
+
+def _clean_group_label(raw: Optional[str]) -> str:
+    label = " ".join((raw or "").split())
+    if not label:
+        raise HTTPException(status_code=400, detail="Group name cannot be empty")
+    if len(label) > 80:
+        raise HTTPException(status_code=400, detail="Group name is limited to 80 characters")
+    return label
+
+
+def _label_taken(db: Session, label: str, except_key: Optional[str] = None) -> bool:
+    q = db.query(FinanceCompanyGroup).filter(func.lower(FinanceCompanyGroup.label) == label.lower())
+    if except_key:
+        q = q.filter(FinanceCompanyGroup.key != except_key)
+    return q.first() is not None
+
+
+@router.get("/groups")
+def list_groups(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Every user with the finance module needs the list (the All Companies filter);
+    company counts are admin-only, as they describe companies the caller may not see."""
+    require_module(db, current_user, MODULE_KEY)
+    counts = {}
+    if current_user.role in {"superadmin", "management"}:
+        counts = dict(db.execute(text(
+            "SELECT company_group, COUNT(*) FROM sheet_sources "
+            "WHERE module = :m AND kind = 'company' AND company_group IS NOT NULL GROUP BY company_group"
+        ), {"m": MODULE}).fetchall())
+    groups = db.query(FinanceCompanyGroup).order_by(FinanceCompanyGroup.sort_order, FinanceCompanyGroup.label).all()
+    is_admin = current_user.role in {"superadmin", "management"}
+    return [_group_dict(g, counts.get(g.key, 0) if is_admin else None) for g in groups]
+
+
+@router.post("/groups")
+def create_group(body: GroupIn, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_module(db, current_user, MODULE_KEY)
+    _require_admin(current_user)
+    label = _clean_group_label(body.label)
+    if _label_taken(db, label):
+        raise HTTPException(status_code=409, detail=f'A group named "{label}" already exists')
+    # The key is the label's slug, fixed for life: companies point at it, so a
+    # later rename changes only what people read.
+    key = _slugify(label)[:40]
+    if not key:
+        raise HTTPException(status_code=400, detail="Group name needs at least one letter or digit")
+    base, n = key, 2
+    while db.get(FinanceCompanyGroup, key):
+        suffix = f"_{n}"
+        key, n = base[:40 - len(suffix)] + suffix, n + 1
+    top = db.query(func.max(FinanceCompanyGroup.sort_order)).scalar() or 0
+    g = FinanceCompanyGroup(key=key, label=label, sort_order=top + 1)
+    db.add(g)
+    db.commit()
+    return _group_dict(g, 0)
+
+
+@router.patch("/groups/{key}")
+def update_group(key: str, body: GroupPatch, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_module(db, current_user, MODULE_KEY)
+    _require_admin(current_user)
+    g = db.get(FinanceCompanyGroup, key)
+    if not g:
+        raise HTTPException(status_code=404, detail="Group not found")
+    if "label" in body.model_fields_set:
+        label = _clean_group_label(body.label)
+        if _label_taken(db, label, except_key=key):
+            raise HTTPException(status_code=409, detail=f'A group named "{label}" already exists')
+        g.label = label
+    if "sort_order" in body.model_fields_set and body.sort_order is not None:
+        g.sort_order = body.sort_order
+    db.commit()
+    return _group_dict(g)
+
+
+@router.delete("/groups/{key}")
+def delete_group(key: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_module(db, current_user, MODULE_KEY)
+    _require_admin(current_user)
+    g = db.get(FinanceCompanyGroup, key)
+    if not g:
+        raise HTTPException(status_code=404, detail="Group not found")
+    untagged = db.execute(text(
+        "SELECT COUNT(*) FROM sheet_sources WHERE module = :m AND company_group = :k"
+    ), {"m": MODULE, "k": key}).scalar() or 0
+    db.delete(g)  # FK ON DELETE SET NULL untags its companies
+    db.commit()
+    return {"deleted": True, "companies_untagged": untagged}
 
 
 class CompanyUpdateIn(BaseModel):
     label: Optional[str] = None
     # Sent as null to un-tag; left out entirely to leave it unchanged.
     company_group: Optional[str] = None
+    # A roll-up of other companies' figures: stays visible, but left out of totals.
+    is_rollup: Optional[bool] = None
 
 
 # Changes the display name and/or group only. The company's identity is sheet_id
@@ -393,11 +500,14 @@ def update_sheet_source(source_id: str, body: CompanyUpdateIn, db: Session = Dep
             raise HTTPException(status_code=400, detail="Company name cannot be empty")
         source.label = label
     if "company_group" in body.model_fields_set:
-        if body.company_group is not None and body.company_group not in COMPANY_GROUPS:
-            raise HTTPException(status_code=400, detail=f"Group must be one of {', '.join(COMPANY_GROUPS)}")
+        if body.company_group is not None and not db.get(FinanceCompanyGroup, body.company_group):
+            raise HTTPException(status_code=400, detail="Unknown group — create it under Company groups first")
         source.company_group = body.company_group
+    if "is_rollup" in body.model_fields_set and body.is_rollup is not None:
+        source.is_rollup = body.is_rollup
     db.commit()
-    return {"id": str(source.id), "sheet_id": source.sheet_id, "label": source.label, "company_group": source.company_group}
+    return {"id": str(source.id), "sheet_id": source.sheet_id, "label": source.label,
+            "company_group": source.company_group, "is_rollup": bool(source.is_rollup)}
 
 
 @router.delete("/sheet-sources/{source_id}")
@@ -413,12 +523,57 @@ def delete_sheet_source(source_id: str, db: Session = Depends(get_db), current_u
     return {"deleted": True, "rows_deleted": count or 0}
 
 
+# ── Published months ─────────────────────────────────────────────────────────
+# Finance adds next month's column to the sheet before filling it in. The sync
+# stores it faithfully — a zero is a legitimate figure, so it cannot tell "no
+# data yet" from "genuinely nothing" — and the template also carries constants
+# (budget, unit prices) into every month. Left alone, the new month lands in
+# every period picker and every chart falls off a cliff to zero.
+#
+# A company's LATEST PUBLISHED month is the last monthly column where its Sales
+# total or Balance Sheet total is non-zero. Monthly rows after it are not data
+# yet and are left out of every view. Only months AFTER it are cut: an earlier
+# month that really was zero stays. A company with no such month at all is cut
+# nowhere, so a tab without these two lines can never disappear.
+_PUBLISHED_ANCHORS = (
+    "sales_accounts/total",
+    "balance_sheet/sources_of_funds/total",
+    "balance_sheet/application_of_funds/total",
+)
+
+
+def _latest_published(db: Session, sids: list) -> dict:
+    """{sheet_source_id (str): latest published month-end date} — companies with
+    no published month are absent from the result."""
+    if not sids:
+        return {}
+    rows = db.execute(text("""
+        SELECT sheet_source_id, MAX(period_end_date) AS latest
+        FROM finance_lines
+        WHERE sheet_source_id IN :sids AND period_type = 'monthly'
+          AND line_key = ANY(:keys) AND amount IS NOT NULL AND amount <> 0
+        GROUP BY sheet_source_id
+    """).bindparams(bindparam("sids", expanding=True)),
+        {"sids": [str(x) for x in sids], "keys": list(_PUBLISHED_ANCHORS)}).fetchall()
+    return {str(r.sheet_source_id): r.latest for r in rows}
+
+
+def _not_yet_published(period_type: str, period_end, latest) -> bool:
+    return latest is not None and period_type == "monthly" and period_end > latest
+
+
+# Same rule as SQL, for the queries that filter in the database.
+_PUBLISHED_SQL = "(CAST(:pub AS date) IS NULL OR period_type <> 'monthly' OR period_end_date <= CAST(:pub AS date))"
+
+
 # ── Analytics ──────────────────────────────────────────────────────────────────
-def _collect_groups(db: Session, sid: str, section_keys: list):
+def _collect_groups(db: Session, sid: str, section_keys: list, hide_unpublished: bool = True):
     """Pull finance_lines for the given sections and shape them into ordered
     render groups: [{section_key, section_label, sub_sections:[{key,label,
     line_items:[{..., series:[point]}], total}]}]. Also returns the ordered
-    distinct period list across all fetched rows."""
+    distinct period list across all fetched rows. Months finance has not filled in
+    yet are left out unless hide_unpublished is False (see _latest_published)."""
+    latest = _latest_published(db, [sid]).get(str(sid)) if hide_unpublished else None
     rows = db.execute(text("""
         SELECT section_key, section_label, sub_section, entity_type, item_no, line_key, line_label,
                parent_key, period_start_date, period_end_date, period_type, amount, percent
@@ -431,6 +586,8 @@ def _collect_groups(db: Session, sid: str, section_keys: list):
     tree: dict = {}
     periods: dict = {}
     for r in rows:
+        if _not_yet_published(r.period_type, r.period_end_date, latest):
+            continue
         pe = r.period_end_date.isoformat()
         periods[(r.period_start_date, r.period_end_date)] = {
             "period_start_date": r.period_start_date.isoformat(),
@@ -582,8 +739,11 @@ def _collect_ratios(db: Session, sid: str, sub_slugs: list) -> list:
         WHERE sheet_source_id = :sid AND section_key = 'ratios' AND sub_section = ANY(:subs)
         ORDER BY period_end_date
     """), {"sid": sid, "subs": sub_slugs}).fetchall()
+    latest = _latest_published(db, [sid]).get(str(sid))
     cats: dict = {}
     for r in rows:
+        if _not_yet_published(r.period_type, r.period_end_date, latest):
+            continue
         cat = cats.setdefault(r.sub_section, {})
         it = cat.setdefault(r.line_key, {
             "line_key": r.line_key, "line_label": r.line_label, "item_no": r.item_no, "series": [],
@@ -602,6 +762,8 @@ def _collect_ratios(db: Session, sid: str, sub_slugs: list) -> list:
             WHERE sheet_source_id = :sid AND line_key = ANY(:keys) AND amount IS NOT NULL
             ORDER BY period_end_date
         """), {"sid": sid, "keys": sorted(needed)}).fetchall():
+            if _not_yet_published(r.period_type, r.period_end_date, latest):
+                continue
             inputs.setdefault(r.line_key, []).append({
                 "period_end_date": r.period_end_date.isoformat(), "period_type": r.period_type,
                 "amount": float(r.amount),
@@ -618,12 +780,12 @@ def _collect_ratios(db: Session, sid: str, sub_slugs: list) -> list:
     return out
 
 
-def _latest_value(db: Session, sid: str, line_key: str):
-    r = db.execute(text("""
+def _latest_value(db: Session, sid: str, line_key: str, pub=None):
+    r = db.execute(text(f"""
         SELECT amount, period_end_date FROM finance_lines
-        WHERE sheet_source_id = :sid AND line_key = :lk AND amount IS NOT NULL
+        WHERE sheet_source_id = :sid AND line_key = :lk AND amount IS NOT NULL AND {_PUBLISHED_SQL}
         ORDER BY period_end_date DESC LIMIT 1
-    """), {"sid": sid, "lk": line_key}).first()
+    """), {"sid": sid, "lk": line_key, "pub": pub}).first()
     return (float(r.amount), r.period_end_date.isoformat()) if r else (None, None)
 
 
@@ -645,9 +807,10 @@ _RECON_TIES = [
 
 def _reconciliation(db: Session, sid: str) -> list:
     out = []
+    pub = _latest_published(db, [sid]).get(str(sid))
     for label, ln, lk, rn, rk in _RECON_TIES:
-        lv, lp = _latest_value(db, sid, lk)
-        rv, rp = _latest_value(db, sid, rk)
+        lv, lp = _latest_value(db, sid, lk, pub)
+        rv, rp = _latest_value(db, sid, rk, pub)
         if lv is None or rv is None:
             continue
         tol = max(1.0, 0.005 * abs(lv))  # ₹1 or 0.5% of the value
@@ -731,7 +894,8 @@ _UNIT_ACTUALS = {
     "4w_seat_cover": ["units/sales_4w/seat_cover"],
     "4w_accessories": ["units/sales_4w/accessories"],
     "4w_mats": ["units/sales_4w/mats"],
-    "4w_other": ["units/sales_4w/other"],
+    # AFAC's sheet calls the row "Other/EV" (key other_ev); every other company says "Other".
+    "4w_other": ["units/sales_4w/other", "units/sales_4w/other_ev"],
     "2w_seat_cover": ["units/sales_2w/seat_cover"],
     "2w_accessories": ["units/sales_2w/accessories"],
     "lifestyle": ["units/sales_2w/others/lifestyle"],
@@ -755,11 +919,12 @@ def _budget_actuals(db: Session, sid: str, groups: list) -> dict:
     if not keys:
         return {}
     by_key: dict = {}
-    for r in db.execute(text("""
+    pub = _latest_published(db, [sid]).get(str(sid))
+    for r in db.execute(text(f"""
         SELECT line_key, period_start_date, period_end_date, period_type, amount
         FROM finance_lines
-        WHERE sheet_source_id = :sid AND line_key = ANY(:keys) AND amount IS NOT NULL
-    """), {"sid": sid, "keys": keys}).fetchall():
+        WHERE sheet_source_id = :sid AND line_key = ANY(:keys) AND amount IS NOT NULL AND {_PUBLISHED_SQL}
+    """), {"sid": sid, "keys": keys, "pub": pub}).fetchall():
         by_key.setdefault(r.line_key, {})[(r.period_start_date, r.period_end_date, r.period_type)] = float(r.amount)
 
     out = {}
@@ -778,7 +943,7 @@ def _budget_actuals(db: Session, sid: str, groups: list) -> dict:
 
 
 def _budget_analytics(db: Session, sid: str) -> dict:
-    groups, periods = _collect_groups(db, sid, BUDGET_SECTIONS)
+    groups, periods = _collect_groups(db, sid, BUDGET_SECTIONS, hide_unpublished=False)
     return {"statement": "budget", "kind": "flow", "kpis": {}, "groups": groups, "periods": periods,
             "actuals": _budget_actuals(db, sid, groups)}
 
@@ -906,6 +1071,7 @@ def finance_consolidated(db: Session = Depends(get_db), current_user: User = Dep
         {"sids": sids, "keys": list(slot_of)},
     ).fetchall()
 
+    published = _latest_published(db, sids)
     acc: dict = {}
     for sid in sids:
         acc[sid] = {block: {name: [] for name in keys} for block, keys in named.items()}
@@ -913,6 +1079,8 @@ def finance_consolidated(db: Session = Depends(get_db), current_user: User = Dep
     for r in rows:
         slot = acc.get(str(r.sheet_source_id))
         if slot is None:
+            continue
+        if _not_yet_published(r.period_type, r.period_end_date, published.get(str(r.sheet_source_id))):
             continue
         if r.section_key == "sales_accounts":
             slot["sales_rows"].append(r)
@@ -931,7 +1099,7 @@ def finance_consolidated(db: Session = Depends(get_db), current_user: User = Dep
         sid = str(c.id)
         channels, sales_total = _sales_channels(acc[sid]["sales_rows"])
         out.append({
-            "id": sid, "label": c.label, "company_group": c.company_group,
+            "id": sid, "label": c.label, "company_group": c.company_group, "is_rollup": bool(c.is_rollup),
             # The sheet tab's own name ("AMATO SRN") — the company key is its slug.
             # Display names can be renamed to full legal names that no chart axis
             # or column header can hold; the tab name is short and finance's own.
@@ -947,14 +1115,20 @@ def finance_consolidated(db: Session = Depends(get_db), current_user: User = Dep
 
 
 def _company_pnl_budget(db: Session, sid: str):
-    """The P&L part of a company's Budget block with each line's actual, or None
-    for a company whose sheet has no budget (most of them, Oct 2026)."""
-    groups, _ = _collect_groups(db, sid, BUDGET_SECTIONS)
+    """The P&L part of a company's Budget block with each line's actual, plus its
+    Income Tax block, or None for a company whose sheet has neither."""
+    groups, _ = _collect_groups(db, sid, BUDGET_SECTIONS, hide_unpublished=False)
     pnl = [sub for g in groups for sub in g["sub_sections"] if sub["key"] == "pnl"]
-    if not pnl:
+    tax = [sub for g in groups for sub in g["sub_sections"] if sub["key"] == "income_tax"]
+    if not pnl and not tax:
         return None
     pnl_only = [{"sub_sections": pnl}]
-    return {"lines": pnl[0]["line_items"], "actuals": _budget_actuals(db, sid, pnl_only)}
+    return {
+        "lines": pnl[0]["line_items"] if pnl else [],
+        "actuals": _budget_actuals(db, sid, pnl_only) if pnl else {},
+        # The Income Tax Budget block: running positions, no actual to compare with.
+        "tax": tax[0]["line_items"] if tax else [],
+    }
 
 
 # ── Sync history ──────────────────────────────────────────────────────────────

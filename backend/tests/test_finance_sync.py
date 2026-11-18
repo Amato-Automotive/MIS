@@ -154,3 +154,29 @@ def test_plain_sales_block_is_the_four_wheeler_block():
         [None, "Seat Cover", 5],
     ]), "AMATO TOTAL")
     assert _keys(records) == {"units/sales_4w/seat_cover", "units/sales_2w/seat_cover"}
+
+
+def test_income_tax_budget_below_unit_economics_belongs_to_budget():
+    """Finance added an Income Tax Budget block after Unit Economics (every company
+    tab, Nov 2026). It used to be filed as more metrics of the last product."""
+    records, errors = parse_finance_tab(_grid([
+        [None, "BUDGET /ACTUAL/VARIANCE"],
+        [None, "Revanue/Income", 1000, 1],
+        [None, "UNIT ECONOMICS"],
+        [None, "Metrics of Trim"],
+        [None, "Unit Sold", 110],
+        [None, "Income Tax Budget"],
+        [None, "Accumlated PBT", 13730000],
+        [None, "Accumlated Income Tax  ", 3432000],
+        [None, "TDS/TCS, Advance tax Deposited", 3279],
+        [None, "Pending Tax Liability", 3428000],
+    ]), "AMATO SRN")
+    assert not errors
+    by_key = {r["line_key"]: r for r in records}
+    assert by_key["budget/income_tax/accumlated_pbt"]["amount"] == 13730000
+    assert by_key["budget/income_tax/pending_tax_liability"]["amount"] == 3428000
+    # Nothing of it is left behind in Unit Economics' Trim block.
+    assert not any(k.startswith("unit_economics/trim/") and "pbt" in k for k in by_key)
+    assert by_key["unit_economics/trim/unit_sold"]["amount"] == 110
+    # And it sorts after the P&L block, not back at the top of Budget.
+    assert by_key["budget/income_tax/accumlated_pbt"]["item_no"] > by_key["budget/pnl/revanue_income"]["item_no"]

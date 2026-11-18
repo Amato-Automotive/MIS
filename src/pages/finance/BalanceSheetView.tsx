@@ -104,7 +104,7 @@ export default function BalanceSheetView({ sheetSourceId, refreshNonce = 0 }: { 
 
       <MoneyTrendCard title="Balance Sheet Size" note="Total Sources of Funds over the merged yearly + monthly timeline (point-in-time)."
         primary={sources} primaryLabel="Sources of Funds" kind="stock"
-        secondary={application} secondaryLabel="Application of Funds" view={view} />
+        secondary={application} secondaryLabel="Application of Funds" view={view} bucket={effBucket} />
 
       {data.ratios && data.ratios.length > 0 && (
         <>

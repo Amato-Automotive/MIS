@@ -8,9 +8,10 @@ import { useMemo } from "react";
 import { Card, RAG, bucketEndDate, bucketLabelsOf, bucketValue, cashCycle, cccStatus } from "../dashboardKit";
 import type { TrendView } from "../aggregate";
 import {
-  BarRow, CompanyTd, MoneyTd, PeriodEmpty, TableCard, Th, TipBox, asAtText, commonDate, rowBg,
+  BarRow, CompanyTd, MoneyTd, PeriodEmpty, TOTAL_ROW, TableCard, Th, TipBox, TotalLabelTd, TotalMoneyTd, asAtText, commonDate, rowBg,
   type ConsolidatedCompany, type WcKey,
 } from "./shared";
+import { sumColumn } from "./totals";
 
 const ASSET_COLS: [WcKey, string][] = [["cash", "Cash & Bank"], ["inventory", "Inventory"], ["debtors", "Debtors"], ["current_assets", "Total"]];
 const LIAB_COLS: [WcKey, string][] = [["creditors", "Creditors"], ["current_liabilities", "Total"]];
@@ -32,9 +33,18 @@ export default function WorkingCapitalSection({ companies, view, bucket, onJump 
       WC_KEYS.map((k) => [k, bucketValue(c.wc[k] ?? [], "stock", view, bucket)])
     ) as Record<WcKey, number | null>;
     const asAt = bucketEndDate(c.wc.nwc?.length ? c.wc.nwc : c.wc.current_assets ?? [], view, bucket);
-    return { id: c.id, label: c.label, values, asAt };
+    return { id: c.id, label: c.label, rollup: c.is_rollup, values, asAt };
   }), [companies, view, bucket]);
   const sharedAsAt = commonDate(rows.map((r) => r.asAt));
+
+  // Total: a company is added only if it reports Current Assets, Current
+  // Liabilities and Net Working Capital together, so the total satisfies
+  // NWC = Current Assets - Current Liabilities. The components (cash, stock,
+  // debtors, creditors) are then added over that same set.
+  const totalled = rows.filter((r) => !r.rollup && r.values.current_assets != null
+    && r.values.current_liabilities != null && r.values.nwc != null);
+  const skipped = rows.filter((r) => !r.rollup).length - totalled.length;
+  const colTotal = (k: WcKey) => sumColumn(totalled.map((r) => r.values[k]));
 
   const latest = useMemo(() => {
     const labels = bucketLabelsOf(companies.flatMap((c) => [...(c.wc.nwc ?? []), ...(c.wc.current_assets ?? [])]), "stock", view);
@@ -85,7 +95,7 @@ export default function WorkingCapitalSection({ companies, view, bucket, onJump 
         <tbody>
           {rows.map((r, i) => (
             <tr key={r.id} className={rowBg(i)}>
-              <CompanyTd label={r.label} />
+              <CompanyTd label={r.label} rollup={r.rollup} />
               {ASSET_COLS.map(([k]) => <MoneyTd key={k} value={r.values[k]} />)}
               {LIAB_COLS.map(([k]) => <MoneyTd key={k} value={r.values[k]} />)}
               <MoneyTd value={r.values.nwc} />
@@ -95,7 +105,24 @@ export default function WorkingCapitalSection({ companies, view, bucket, onJump 
             </tr>
           ))}
         </tbody>
+        {totalled.length > 0 && (
+          <tfoot>
+            <tr className={TOTAL_ROW}>
+              <TotalLabelTd count={totalled.length} excluded={rows.filter((r) => r.rollup).length} />
+              {ASSET_COLS.map(([k]) => <TotalMoneyTd key={k} {...colTotal(k)} of={totalled.length} />)}
+              {LIAB_COLS.map(([k]) => <TotalMoneyTd key={k} {...colTotal(k)} of={totalled.length} />)}
+              <TotalMoneyTd {...colTotal("nwc")} of={totalled.length} />
+              {!sharedAsAt && <td />}
+            </tr>
+          </tfoot>
+        )}
       </TableCard>
+      {totalled.length > 0 && skipped > 0 && (
+        <p className="text-[11px] text-gray-500 -mt-2 px-1">
+          The Total leaves out {skipped} {skipped === 1 ? "company" : "companies"} that did not report Current Assets, Current
+          Liabilities and Net Working Capital for {bucket}, so it satisfies Net Working Capital = Current Assets − Current Liabilities.
+        </p>
+      )}
 
       <Card title="Cash conversion cycle by company"
         note={`Days cash is tied up in ${bucket}: inventory days + receivable days − payable days. Shorter is better.`}>

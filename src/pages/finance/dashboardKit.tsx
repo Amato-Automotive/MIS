@@ -19,6 +19,7 @@ import {
   GROSS_PROFIT_COLOR, NETT_PROFIT_COLOR, APPLICATION_COLOR,
 } from "./format";
 import { buildColorMap, computeDelta, type TrendView } from "./aggregate";
+import { keepUpTo, upToPicked } from "./pickedPeriod";
 
 // ── Analytics envelope types (v2) ────────────────────────────────────────────
 export interface FinPoint {
@@ -509,12 +510,14 @@ const TREND_TOOLTIP_STYLE: React.CSSProperties = {
 };
 
 // ── Trend chart (area for stock, bars + optional line for flow) ──────────────
-export function MoneyTrendCard({ title, note, primary, primaryLabel, kind, secondary, secondaryLabel, view }:
+export function MoneyTrendCard({ title, note, primary, primaryLabel, kind, secondary, secondaryLabel, view, bucket }:
   {
     title: string; note?: string; primary: FinPoint[]; primaryLabel: string; kind: "stock" | "flow";
     secondary?: FinPoint[]; secondaryLabel?: string; view: TrendView;
+    /** The period picked in the controls: the chart ends there. */
+    bucket?: string;
   }) {
-  const data = useMemo(() => {
+  const allData = useMemo(() => {
     const base = monthlyPercentBase(secondary ? [primary, secondary] : [primary]);
     const a = buildTimeline(primary, kind, view);
     const b = secondary ? buildTimeline(secondary, kind, view) : [];
@@ -529,6 +532,7 @@ export function MoneyTrendCard({ title, note, primary, primaryLabel, kind, secon
       secondaryPct: secondary ? bucketPercent(secondary, view, x.label, kind, base) : null,
     }));
   }, [primary, secondary, kind, view]);
+  const data = useMemo(() => upToPicked(allData, bucket), [allData, bucket]);
 
   return (
     <Card title={title} note={note}>
@@ -618,12 +622,12 @@ function DonutCard({ sub, kind, view, bucket, groupLabel, colorMap }:
 }
 
 // ── Stacked bars — one additive sub-section's composition per period ─────────
-function CompositionByPeriodCard({ sub, kind, groupLabel, colorMap, view }:
-  { sub: FinSubSection; kind: "stock" | "flow"; groupLabel: string; colorMap: Map<string, string>; view: TrendView }) {
+function CompositionByPeriodCard({ sub, kind, groupLabel, colorMap, view, bucket }:
+  { sub: FinSubSection; kind: "stock" | "flow"; groupLabel: string; colorMap: Map<string, string>; view: TrendView; bucket?: string }) {
   const [mode, setMode] = useState<"pct" | "abs">("pct");
   const items = sub.line_items;
 
-  const { data, keys } = useMemo(() => {
+  const { data: allData, keys } = useMemo(() => {
     const perItem = items.map((it) => ({ it, tl: buildTimeline(it.series, kind, view) }));
     const labels = mergedLabels(perItem.map((p) => p.tl));
     const rows = labels.map((label) => {
@@ -633,6 +637,7 @@ function CompositionByPeriodCard({ sub, kind, groupLabel, colorMap, view }:
     });
     return { data: rows, keys: perItem.map((p) => p.it) };
   }, [items, kind, view]);
+  const data = useMemo(() => upToPicked(allData, bucket), [allData, bucket]);
 
   return (
     <Card title={`${sub.label ?? groupLabel} — composition by period`} note="Each period's components stacked — as a share (%) or absolute value (₹)."
@@ -727,8 +732,8 @@ export function ValueModeToggle({ mode, onChange }: { mode: ValueMode; onChange:
   );
 }
 
-function LineItemTable({ group, kind, view, mode = "amount" }:
-  { group: FinGroup; kind: "stock" | "flow"; view: TrendView; mode?: ValueMode }) {
+function LineItemTable({ group, kind, view, mode = "amount", bucket }:
+  { group: FinGroup; kind: "stock" | "flow"; view: TrendView; mode?: ValueMode; bucket?: string }) {
   const rows: { label: string; series: FinPoint[]; bold: boolean; indent: boolean }[] = [];
   for (const sub of group.sub_sections) {
     if (sub.label) rows.push({ label: sub.label, series: [], bold: true, indent: false });
@@ -775,11 +780,14 @@ function LineItemTable({ group, kind, view, mode = "amount" }:
             {rows.map((r, i) => {
               const m = mode === "percent" ? bucketedPct[i] : bucketed[i];
               const vals = m ? cols.map((c) => m.get(c)).filter((v): v is number => v != null) : [];
+              // The little trend line ends at the picked period like every other chart;
+              // the figures in the row (and the shading scale) still cover every column.
+              const sparkVals = m ? cols.filter((c) => keepUpTo(c, bucket)).map((c) => m.get(c)).filter((v): v is number => v != null) : [];
               const rowMax = Math.max(mode === "percent" ? Number.MIN_VALUE : 1, ...vals.map(Math.abs));
               return (
                 <tr key={i} className="border-b border-gray-100">
                   <td className={`py-2 pr-3 sticky left-0 bg-white ${r.bold ? "font-bold text-gray-800" : "text-gray-600"} ${r.indent ? "pl-3" : ""}`}>{r.label}</td>
-                  <td className="py-1 px-2 text-center">{vals.length >= 2 ? <Sparkline values={vals} color={r.bold ? NETT_PROFIT_COLOR : SOURCES_COLOR} /> : <span className="text-gray-400">—</span>}</td>
+                  <td className="py-1 px-2 text-center">{sparkVals.length >= 2 ? <Sparkline values={sparkVals} color={r.bold ? NETT_PROFIT_COLOR : SOURCES_COLOR} /> : <span className="text-gray-400">—</span>}</td>
                   {cols.map((c) => {
                     const v = m ? m.get(c) ?? null : null;
                     const shade = v != null && !r.bold ? Math.min(0.14, (Math.abs(v) / rowMax) * 0.14) : 0;
@@ -869,9 +877,9 @@ export function ProfitBridgeCard({ group, view, bucket }: { group: FinGroup; vie
 }
 
 // ── P&L margin trend (Gross Margin % and PAT % of Sales over time) ───────────
-export function MarginTrendCard({ salesSeries, grossSeries, patSeries, view }:
-  { salesSeries: FinPoint[]; grossSeries: FinPoint[]; patSeries: FinPoint[]; view: TrendView }) {
-  const data = useMemo(() => {
+export function MarginTrendCard({ salesSeries, grossSeries, patSeries, view, bucket }:
+  { salesSeries: FinPoint[]; grossSeries: FinPoint[]; patSeries: FinPoint[]; view: TrendView; bucket?: string }) {
+  const allData = useMemo(() => {
     const s = buildTimeline(salesSeries, "flow", view);
     const g = buildTimeline(grossSeries, "flow", view);
     const p = buildTimeline(patSeries, "flow", view);
@@ -883,6 +891,7 @@ export function MarginTrendCard({ salesSeries, grossSeries, patSeries, view }:
       pat: x.value > 0 ? ((pm.get(x.label) ?? 0) / x.value) * 100 : null,
     }));
   }, [salesSeries, grossSeries, patSeries, view]);
+  const data = useMemo(() => upToPicked(allData, bucket), [allData, bucket]);
 
   return (
     <Card title="Margins" note="Gross Margin and PAT as a % of Sales.">
@@ -1075,17 +1084,20 @@ export function ratioAt(it: RatioItem, view: TrendView, bucket: string): number 
 }
 
 // The trend spark, on the same basis as the headline number.
-function ratioSpark(it: RatioItem, view: TrendView): number[] {
+function ratioSpark(it: RatioItem, view: TrendView, bucket?: string): number[] {
   const d = it.derive;
-  if (view === "monthly" || !d) return buildTimeline(it.series, "stock", view).map((x) => x.value);
+  if (view === "monthly" || !d) {
+    return buildTimeline(it.series, "stock", view).filter((x) => keepUpTo(x.label, bucket)).map((x) => x.value);
+  }
   const axis = d.kind === "growth" ? d.base : d.kind === "days" ? d.terms[0].flow : d.num;
   return buildTimeline(axis.series, "flow", view)
+    .filter((p) => keepUpTo(p.label, bucket))
     .map((p) => derivedReading(d, view, p.label).value)
     .filter((v): v is number => v != null);
 }
 
 function RatioCard({ it, view, bucket }: { it: RatioItem; view: TrendView; bucket: string }) {
-  const spark = ratioSpark(it, view);
+  const spark = ratioSpark(it, view, bucket);
   const { value, basis } = ratioReading(it, view, bucket);
   const verdict = value != null ? ratioVerdict(it.line_key, value) : null;
   return (
@@ -1299,7 +1311,7 @@ export function GroupBlock({ group, view, bucket, kind }: { group: FinGroup; vie
         return (
           <div key={sub.key ?? group.section_key} className="grid gap-4 xl:grid-cols-2">
             <DonutCard sub={sub} kind={kind} view={view} bucket={bucket} groupLabel={group.section_label} colorMap={colorMap} />
-            <CompositionByPeriodCard sub={sub} kind={kind} groupLabel={group.section_label} colorMap={colorMap} view={view} />
+            <CompositionByPeriodCard sub={sub} kind={kind} groupLabel={group.section_label} colorMap={colorMap} view={view} bucket={bucket} />
           </div>
         );
       })}
@@ -1310,7 +1322,7 @@ export function GroupBlock({ group, view, bucket, kind }: { group: FinGroup; vie
             : "The sheet's own percentages, as at the close of each period; use the View control at the top to switch period.")
           : "Values at the current granularity; use the View control at the top to switch."}
         right={hasPercent ? <ValueModeToggle mode={valueMode} onChange={setValueMode} /> : undefined}>
-        <LineItemTable group={group} kind={kind} view={view} mode={valueMode} />
+        <LineItemTable group={group} kind={kind} view={view} mode={valueMode} bucket={bucket} />
       </Card>
     </div>
   );
@@ -1342,7 +1354,7 @@ export function AgingPanel({ group, view, bucket }: { group: FinGroup; view: Tre
   }), [group, view, bucket]);
 
   // Trend: aged share (%) per category over the whole timeline.
-  const trend = useMemo(() => {
+  const allTrend = useMemo(() => {
     const perCat = group.sub_sections.map((sub) => {
       const cur = agingBucketOf(sub, "/lt_90_days");
       const aged = agingBucketOf(sub, "/gt_90_days");
@@ -1361,6 +1373,7 @@ export function AgingPanel({ group, view, bucket }: { group: FinGroup; view: Tre
       return row;
     });
   }, [group, view]);
+  const trend = useMemo(() => upToPicked(allTrend, bucket), [allTrend, bucket]);
 
   const hasData = cats.some((c) => c.total > 0);
   if (!hasData) return <EmptyState>No working-capital aging data yet.</EmptyState>;
@@ -1431,7 +1444,7 @@ export function AgingPanel({ group, view, bucket }: { group: FinGroup; view: Tre
       </Card>
 
       <Card title="Aging — detail" note="Values at the current granularity; use the View control at the top to switch.">
-        <LineItemTable group={group} kind="stock" view={view} />
+        <LineItemTable group={group} kind="stock" view={view} bucket={bucket} />
       </Card>
     </div>
   );
@@ -1455,7 +1468,7 @@ export function UnitCostPanel({ group, view, bucket }: { group: FinGroup; view: 
     return { key: it.line_key, label: it.line_label, value: ch.value, pct, prevLabel: ch.prevLabel, color: UNIT_COST_COLORS[i % UNIT_COST_COLORS.length] };
   }).filter((r) => r.value != null && r.value > 0), [items, view, bucket]);
 
-  const trend = useMemo(() => {
+  const allTrend = useMemo(() => {
     const per = items.map((it) => {
       const tl = buildTimeline(it.series, "stock", view);
       return { it, tl, m: new Map(tl.map((x) => [x.label, x.value])) };
@@ -1467,6 +1480,7 @@ export function UnitCostPanel({ group, view, bucket }: { group: FinGroup; view: 
       return row;
     });
   }, [items, view]);
+  const trend = useMemo(() => upToPicked(allTrend, bucket), [allTrend, bucket]);
 
   if (snapshot.length === 0) return <EmptyState>No average unit cost data yet.</EmptyState>;
 

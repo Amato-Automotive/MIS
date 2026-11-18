@@ -161,6 +161,10 @@ _BLOCK_HEADINGS = {
     "budget cash flow": ("budget", "Budget", "cash_flow"),
     "budget sale units": ("budget", "Budget", "units"),
     "unit economics": ("unit_economics", "Unit Economics", None),
+    # Sits BELOW Unit Economics (Oct-Nov 2026), so without its own heading its four
+    # rows were read as more metrics of the last product ("Trim") and the Budget
+    # tab never saw them. It returns to the Budget section, as a fourth block.
+    "income tax budget": ("budget", "Budget", "income_tax"),
 }
 _UE_PRODUCT_RE = re.compile(r"^\s*metrics\s+of\s+(.+?)\s*$", re.IGNORECASE)
 
@@ -330,6 +334,10 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
     sub_section: Optional[str] = None
     units_segment: Optional[str] = None  # §7 only — the enclosing Sales/Productions block
     ordinal = 0
+    # Each section keeps its own running ordinal, because Budget is now left for
+    # Unit Economics and returned to — a reset on return would number the Income
+    # Tax rows from 1 again and the sub-sections would sort out of sheet order.
+    ordinals: dict = {}
 
     def emit(label: str, entity_type: str):
         nonlocal ordinal
@@ -364,7 +372,9 @@ def parse_finance_tab(grid, tab_title: str) -> Tuple[list, list]:
         if block:
             key, block_label, sub = block
             if key != section_key:
-                ordinal = 0  # Budget's three blocks share one section and one ordinal run
+                if section_key:
+                    ordinals[section_key] = ordinal
+                ordinal = ordinals.get(key, 0)  # a section's blocks share one ordinal run
             section_key, section_label, sub_section = key, block_label, sub
             registered = True
             units_segment = None

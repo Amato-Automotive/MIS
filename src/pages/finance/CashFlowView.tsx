@@ -13,6 +13,7 @@ import {
   SUCCESS_COLOR, DANGER_COLOR, NEUTRAL_COLOR, GRID_LINE_COLOR, AXIS_TEXT_COLOR,
 } from "./format";
 import { computeDelta, type TrendView } from "./aggregate";
+import { keepUpTo } from "./pickedPeriod";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -313,13 +314,14 @@ export default function CashFlowView({ sheetSourceId, refreshNonce = 0 }: { shee
     const npM = new Map(buildTimeline(netProfitItem?.series ?? [], "flow", view).map((x) => [x.label, x.value]));
     const ocM = new Map(buildTimeline(opSeries, "flow", view).map((x) => [x.label, x.value]));
     const fcM = new Map(buildTimeline(fcfSeries, "flow", view).map((x) => [x.label, x.value]));
-    return bucketLabels.map((l) => ({
+    // The chart ends at the picked period, not at the last column in the sheet.
+    return bucketLabels.filter((l) => keepUpTo(l, effBucket)).map((l) => ({
       label: l,
       "Net Profit": npM.get(l) ?? null,
       "Operating Cash": ocM.get(l) ?? null,
       "Free Cash Flow": fcM.get(l) ?? null,
     }));
-  }, [netProfitItem, opSeries, fcfSeries, bucketLabels, view]);
+  }, [netProfitItem, opSeries, fcfSeries, bucketLabels, view, effBucket]);
 
   const hasData = activities.length > 0 && (data?.periods.length ?? 0) > 0;
 

@@ -22,12 +22,18 @@ import {
   formatCompact, formatINR, SUCCESS_COLOR, DANGER_COLOR, NEUTRAL_COLOR,
   REVENUE_COLOR, APPLICATION_COLOR, SOURCES_COLOR,
 } from "./format";
+import { useCompanyGroups } from "./useCompanyGroups";
 import { MARGIN_BANDS, classifyMargin, netPatMargin } from "./margin";
 import {
-  COMPANY_GROUP_LABELS, COMPANY_GROUP_OPTIONS, CompanyTd, MoneyTd, PeriodEmpty, TableCard, Th, asAtText, commonDate, rowBg,
+  CompanyTd, MoneyTd, PeriodEmpty, TOTAL_ROW, TableCard, Th, TotalLabelTd, TotalMoneyTd, asAtText, commonDate, rowBg,
   type CompanyGroup, type ConsolidatedCompany,
 } from "./all-companies/shared";
 import BudgetSection from "./all-companies/BudgetSection";
+import IncomeTaxSection from "./all-companies/IncomeTaxSection";
+import {
+  BalanceSheetTrend, BudgetTrend, IncomeTaxTrend, PlTrends, RatioTrend, SalesTrend, WorkingCapitalTrend,
+} from "./all-companies/TrendSections";
+import { sumColumn, sumTogether, totalMargin } from "./all-companies/totals";
 import SalesAccountSection from "./all-companies/SalesAccountSection";
 import WorkingCapitalSection from "./all-companies/WorkingCapitalSection";
 import RatioScorecard from "./all-companies/RatioScorecard";
@@ -52,6 +58,12 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
   const { token } = useAuth();
   const [allCompanies, setAllCompanies] = useState<ConsolidatedCompany[]>([]);
   const [group, setGroup] = useState<CompanyGroup | "">("");
+  const groupList = useCompanyGroups(refreshNonce);
+  // A group an admin deletes while it is selected here must not leave the view
+  // filtered to nothing.
+  useEffect(() => {
+    if (group && groupList.groups.length > 0 && !groupList.groups.some((g) => g.key === group)) setGroup("");
+  }, [group, groupList.groups]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<TrendView>("monthly");
@@ -105,7 +117,7 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
     // margins, and only meaningful on a positive base.
     const ratio = netPatMargin(sales, pat);
     const margin = ratio != null ? ratio * 100 : null;
-    return { id: c.id, label: c.label, sales, gross, pbitda, pat, margin, band: classifyMargin(ratio) };
+    return { id: c.id, label: c.label, rollup: c.is_rollup, sales, gross, pbitda, pat, margin, band: classifyMargin(ratio) };
   }), [companies, view, effBucket]);
 
   // A balance sheet is a stock: each company's position at the close of the
@@ -114,8 +126,23 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
     const sources = bucketValue(c.bs.sources ?? [], "stock", view, effBucket);
     const application = bucketValue(c.bs.application ?? [], "stock", view, effBucket);
     const gap = sources != null && application != null ? sources - application : null;
-    return { id: c.id, label: c.label, sources, application, gap, asAt: bucketEndDate(c.bs.sources ?? [], view, effBucket) };
+    return { id: c.id, label: c.label, rollup: c.is_rollup, sources, application, gap, asAt: bucketEndDate(c.bs.sources ?? [], view, effBucket) };
   }), [companies, view, effBucket]);
+
+  // Totals. Roll-up companies stay as rows but are never added (totals.ts says why
+  // and how). The margin is total PAT ÷ total Sales, never an average of margins.
+  const plTotalled = plRows.filter((r) => !r.rollup);
+  const plTotals = {
+    sales: sumColumn(plTotalled.map((r) => r.sales)), gross: sumColumn(plTotalled.map((r) => r.gross)),
+    pbitda: sumColumn(plTotalled.map((r) => r.pbitda)), pat: sumColumn(plTotalled.map((r) => r.pat)),
+  };
+  const plTotalMargin = totalMargin(plTotalled);
+  const plTotalBand = classifyMargin(plTotalMargin);
+  // Sources and Application are summed over the same companies, so the total
+  // balances whenever every company does.
+  const bsTotalled = bsRows.filter((r) => !r.rollup);
+  const bsTotal = sumTogether(bsTotalled.map((r) => [r.sources, r.application]));
+  const bsTotalGap = bsTotal.values[0] != null && bsTotal.values[1] != null ? bsTotal.values[0] - bsTotal.values[1] : null;
 
   if (loading) return <div className="text-sm text-gray-500 py-10 text-center">Loading all companies…</div>;
   if (error) return <EmptyState>{error}</EmptyState>;
@@ -126,7 +153,7 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
       value={group}
       onChange={(v) => setGroup(v as CompanyGroup | "")}
       placeholder={FILTER_LABELS.companyGroup.placeholder}
-      options={[{ value: "", label: FILTER_LABELS.companyGroup.all }, ...COMPANY_GROUP_OPTIONS]}
+      options={[{ value: "", label: FILTER_LABELS.companyGroup.all }, ...groupList.options]}
       className="min-w-[140px]"
     />
   );
@@ -142,8 +169,10 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
 
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 -mb-2">
         <p className="text-[11px] text-gray-500">
-          Each company <b>as reported</b> — nothing is added across companies, so a roll-up tab appears as its own row.
-          {group && <> Showing <b>{COMPANY_GROUP_LABELS[group]}</b> companies only.</>}
+          Each company <b>as reported</b>, with a <b>Total</b> row under each table that adds the companies shown. A roll-up tab
+          (such as Consolidated of Amato Group) stays as its own row and is left out of the totals, so nothing is counted twice.
+          A total is over the companies that reported — ratios are never added.
+          {group && <> Showing <b>{groupList.labelOf(group)}</b> companies only.</>}
           {untagged > 0 && (
             <> {untagged} {untagged === 1 ? "company is" : "companies are"} not yet in a group and show only under <b>All groups</b> — an admin sets the group from the Data Sources tab.</>
           )}
@@ -167,6 +196,7 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
       ) : (<>
       {anchor("allco-pl")}
       <SectionHeading accent={REVENUE_COLOR}>Profit &amp; Loss · {effBucket || "—"}</SectionHeading>
+      <PlTrends companies={companies} view={view} bucket={effBucket} />
       {!anyPl ? (
         <PeriodEmpty what="P&L figures" bucket={effBucket} onJump={setBucket}
           latest={latestOf(companies.flatMap((c) => c.pl.sales), "flow")} />
@@ -196,7 +226,7 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
           <tbody>
             {plRows.map((r, i) => (
               <tr key={r.id} className={rowBg(i)}>
-                <CompanyTd label={r.label} />
+                <CompanyTd label={r.label} rollup={r.rollup} />
                 <MoneyTd value={r.sales} />
                 <MoneyTd value={r.gross} />
                 <MoneyTd value={r.pbitda} />
@@ -214,19 +244,47 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
               </tr>
             ))}
           </tbody>
+          {plTotalled.length > 0 && (
+            <tfoot>
+              <tr className={TOTAL_ROW}>
+                <TotalLabelTd count={plTotalled.length} excluded={plRows.length - plTotalled.length} />
+                <TotalMoneyTd {...plTotals.sales} of={plTotalled.length} />
+                <TotalMoneyTd {...plTotals.gross} of={plTotalled.length} />
+                <TotalMoneyTd {...plTotals.pbitda} of={plTotalled.length} />
+                <TotalMoneyTd {...plTotals.pat} of={plTotalled.length} />
+                <td className="px-4 py-3 text-right text-[13px] font-bold tabular-nums"
+                  style={{ color: plTotalMargin == null ? NEUTRAL_COLOR : plTotalMargin >= 0 ? SUCCESS_COLOR : DANGER_COLOR }}>
+                  {plTotalMargin == null ? "—" : `${(plTotalMargin * 100).toFixed(1)}%`}
+                </td>
+                <td className="px-4 py-3 text-center whitespace-nowrap">
+                  {plTotalBand ? (
+                    <span className="inline-block min-w-[80px] rounded-md px-2 py-0.5 text-[11px] font-bold"
+                      style={{ background: plTotalBand.bg, color: plTotalBand.fg }}>{plTotalBand.label}</span>
+                  ) : <span className="text-[11px] font-medium text-gray-400">—</span>}
+                </td>
+              </tr>
+            </tfoot>
+          )}
         </TableCard>
       )}
 
       {anchor("allco-budget")}
       <SectionHeading accent={REVENUE_COLOR}>Budget vs Actual · {effBucket || "—"}</SectionHeading>
+      <BudgetTrend companies={companies} view={view} bucket={effBucket} />
       <BudgetSection companies={companies} view={view} bucket={effBucket} onJump={setBucket} />
+
+      <SectionHeading accent={DANGER_COLOR}>Income Tax Budget · close of {effBucket || "—"}</SectionHeading>
+      <IncomeTaxTrend companies={companies} view={view} bucket={effBucket} />
+      <IncomeTaxSection companies={companies} view={view} bucket={effBucket} onJump={setBucket} />
 
       {anchor("allco-sales")}
       <SectionHeading accent={REVENUE_COLOR}>Sales Account · {effBucket || "—"}</SectionHeading>
+      <SalesTrend companies={companies} view={view} bucket={effBucket} />
       <SalesAccountSection companies={companies} view={view} bucket={effBucket} onJump={setBucket} />
 
       {anchor("allco-bs")}
       <SectionHeading accent={APPLICATION_COLOR}>Balance Sheet · close of {effBucket || "—"}</SectionHeading>
+      <BalanceSheetTrend companies={companies} view={view} bucket={effBucket} />
       {!anyBs ? (
         <PeriodEmpty what="balance-sheet figures" bucket={effBucket} onJump={setBucket}
           latest={latestOf(companies.flatMap((c) => c.bs.sources ?? []), "stock")} />
@@ -250,7 +308,7 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
               const balanced = r.gap != null && Math.abs(r.gap) < 1;
               return (
                 <tr key={r.id} className={rowBg(i)}>
-                  <CompanyTd label={r.label} />
+                  <CompanyTd label={r.label} rollup={r.rollup} />
                   <MoneyTd value={r.sources} />
                   <MoneyTd value={r.application} />
                   <td className="px-4 py-3 text-center whitespace-nowrap">
@@ -274,15 +332,39 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
               );
             })}
           </tbody>
+          {bsTotalled.length > 0 && (
+            <tfoot>
+              <tr className={TOTAL_ROW}>
+                <TotalLabelTd count={bsTotalled.length} excluded={bsRows.length - bsTotalled.length} />
+                <TotalMoneyTd value={bsTotal.values[0] ?? null} n={bsTotal.n} of={bsTotalled.length} />
+                <TotalMoneyTd value={bsTotal.values[1] ?? null} n={bsTotal.n} of={bsTotalled.length} />
+                <td className="px-4 py-3 text-center whitespace-nowrap">
+                  {bsTotalGap == null ? <span className="text-[11px] font-medium text-gray-400">—</span> : (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full"
+                      style={{
+                        background: Math.abs(bsTotalGap) < 1 ? `${SUCCESS_COLOR}14` : `${DANGER_COLOR}14`,
+                        color: Math.abs(bsTotalGap) < 1 ? SUCCESS_COLOR : DANGER_COLOR,
+                      }}
+                      title={Math.abs(bsTotalGap) < 1 ? "Sources = Application" : `Off by ${formatINR(Math.abs(bsTotalGap))}`}>
+                      {Math.abs(bsTotalGap) < 1 ? "✓ Balanced" : `✗ Off by ${formatCompact(Math.abs(bsTotalGap))}`}
+                    </span>
+                  )}
+                </td>
+                {!bsAsAt && <td />}
+              </tr>
+            </tfoot>
+          )}
         </TableCard>
       )}
 
       {anchor("allco-wc")}
       <SectionHeading accent={APPLICATION_COLOR}>Working Capital · close of {effBucket || "—"}</SectionHeading>
+      <WorkingCapitalTrend companies={companies} view={view} bucket={effBucket} />
       <WorkingCapitalSection companies={companies} view={view} bucket={effBucket} onJump={setBucket} />
 
       {anchor("allco-ratios")}
       <SectionHeading accent={SOURCES_COLOR}>Key Ratios · {effBucket || "—"}</SectionHeading>
+      <RatioTrend companies={companies} view={view} bucket={effBucket} />
       <RatioScorecard companies={companies} view={view} bucket={effBucket} onJump={setBucket} />
       </>)}
     </div>

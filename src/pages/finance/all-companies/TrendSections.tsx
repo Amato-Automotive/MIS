@@ -24,6 +24,8 @@ interface Props { companies: ConsolidatedCompany[]; view: TrendView; bucket: str
 
 const BLUE = SERIES_COLORS[0];
 const ORANGE = SERIES_COLORS[1];
+/** The plan: a neutral grey beside the blue actual, so the two read apart at a glance. */
+const BUDGET_BAR = "#8A94A0";
 
 const shortName = (c: ConsolidatedCompany) => c.short_label || c.label;
 
@@ -73,7 +75,6 @@ export function PlTrends({ companies, view, bucket }: Props) {
   })), [eligible, view]);
 
   const label = PL_METRICS.find((m) => m.key === metric)!.label;
-  const fixed: TrendLine[] = [{ key: "total", label: `Total ${label}`, color: TOTAL_INK, width: 3, points: sumByLabel(labels, maps.map((m) => m[metric])) }];
   const candidates = maps.map((m) => companyLine(m.c, labels, m[metric]));
 
   const margin: TrendLine[] = [{ key: "margin", label: "Total PAT margin", color: BLUE, width: 3,
@@ -81,11 +82,11 @@ export function PlTrends({ companies, view, bucket }: Props) {
 
   return (
     <div className="flex flex-col gap-4">
-      <TrendChart title={`${label} over time`} labels={labels} fixed={fixed} candidates={candidates} fmt={fmtMoney}
+      <TrendChart title={`${label} over time`} labels={labels} fixed={[]} candidates={candidates} fmt={fmtMoney}
         selectedLabel={bucket}
         right={<Seg value={metric} onChange={setMetric} options={PL_METRICS.map((m) => ({ key: m.key, label: m.label }))} />}
-        note={<>How {label} has moved, month by month, quarter by quarter or year by year as the view is set. The dark line is the
-          group; add companies below it to see who is driving the change. {GROUP_NOTE} Exact figures are in the table below.</>} />
+        note={<>How {label} has moved, month by month, quarter by quarter or year by year as the view is set, one line per company:
+          the five biggest to start, add or remove companies below. Exact figures, and the group Total, are in the table below.</>} />
       <TrendChart title="Group PAT margin over time" labels={labels} fixed={margin} fmt={pct1} selectedLabel={bucket}
         refLines={MARGIN_BANDS.filter((b) => b.min > -Infinity).map((b) => ({ y: b.min * 100, label: `${b.label} from ${b.min * 100}%` }))}
         height={240}
@@ -131,15 +132,15 @@ export function BudgetTrend({ companies, view, bucket }: Props) {
   }, [labels, per]);
 
   const fixed: TrendLine[] = [
-    { key: "budget", label: `Budget · ${spec.label}`, color: TOTAL_INK, dashed: true, width: 2.5, points: budgetPts },
-    { key: "actual", label: `Actual · ${spec.label}`, color: BLUE, width: 3, points: actualPts },
+    { key: "budget", label: `Budget · ${spec.label}`, color: BUDGET_BAR, points: budgetPts },
+    { key: "actual", label: `Actual · ${spec.label}`, color: BLUE, points: actualPts },
   ];
   return (
-    <TrendChart title={`Budget vs actual over time · ${spec.label}`} labels={labels} fixed={fixed} fmt={fmtMoney} selectedLabel={bucket}
+    <TrendChart title={`Budget vs actual over time · ${spec.label}`} labels={labels} fixed={fixed} fmt={fmtMoney} selectedLabel={bucket} bars
       right={<Seg value={metric} onChange={setMetric} options={BUDGET_METRICS.map((m) => ({ key: m.key, label: m.label }))} />}
-      note={<>The group's plan (dashed) against what was actually reported (solid). Both lines add only the companies that have a budget
-        <b> and</b> an actual for that period, so they compare like with like — the same rule as the Budget table's Total row.
-        Where the lines meet, the group is on plan.</>} />
+      note={<>The group's plan (grey bar) beside what was actually reported (blue bar), period by period. Both bars add only the companies that
+        have a budget <b>and</b> an actual for that period, so they compare like with like — the same rule as the Budget table's Total row.
+        Where the two bars are level, the group is on plan.</>} />
   );
 }
 
@@ -191,13 +192,13 @@ export function SalesTrend({ companies, view, bucket }: Props) {
 
   return (
     <TrendChart title={mode === "channel" ? "Sales by channel over time" : "Sales by company over time"} labels={labels}
-      fixed={mode === "channel" ? [total, ...channelLines] : [total]}
+      fixed={mode === "channel" ? [total, ...channelLines] : []}
       candidates={mode === "company" ? candidates : []} fmt={fmtMoney} selectedLabel={bucket}
       right={<Seg value={mode} onChange={setMode} options={[{ key: "channel", label: "By channel" }, { key: "company", label: "By company" }]} />}
       note={mode === "channel"
         ? <>Group Sales split by the channels in each company's Sales Accounts (Branch Purchase sits below the Total and is not a sale). The
             dark line is total Sales; each coloured line is one channel added across the companies that have it. {GROUP_NOTE}</>
-        : <>Group Sales (dark) with the companies you pick. {GROUP_NOTE}</>} />
+        : <>Sales for each company you pick, the five biggest to start. The group Total is in the table below.</>} />
   );
 }
 
@@ -215,17 +216,16 @@ export function BalanceSheetTrend({ companies, view, bucket }: Props) {
     { key: "sources", label: "Sources of Funds", color: BLUE, width: 3, points: sources },
     { key: "application", label: "Application of Funds", color: ORANGE, width: 2.5, dashed: true, points: application },
   ];
-  const total: TrendLine = { key: "total", label: "Total Sources of Funds", color: TOTAL_INK, width: 3, points: sources };
   const candidates = maps.map((m) => companyLine(m.c, labels, m.sources));
 
   return (
     <TrendChart title={mode === "group" ? "Balance sheet over time" : "Sources of Funds by company over time"} labels={labels}
-      fixed={mode === "group" ? group : [total]} candidates={mode === "company" ? candidates : []} fmt={fmtMoney} selectedLabel={bucket}
+      fixed={mode === "group" ? group : []} candidates={mode === "company" ? candidates : []} fmt={fmtMoney} selectedLabel={bucket}
       right={<Seg value={mode} onChange={setMode} options={[{ key: "group", label: "Group" }, { key: "company", label: "By company" }]} />}
       note={mode === "group"
         ? <>Where the group's money comes from (Sources) against where it is held (Application), at each period's end. A balance sheet
             balances, so the two lines sit on top of each other — a gap between them is a problem to chase. They add the same companies.</>
-        : <>The group's Sources of Funds (dark) with the companies you pick — who is growing the balance sheet. {GROUP_NOTE}</>} />
+        : <>Sources of Funds for each company you pick, to see who is growing the balance sheet. The group Total is in the table below.</>} />
   );
 }
 
@@ -248,7 +248,6 @@ export function WorkingCapitalTrend({ companies, view, bucket }: Props) {
     { key: "cl", label: "Current Liabilities", color: ORANGE, width: 2.5, points: cl },
     { key: "nwc", label: "Net Working Capital", color: TOTAL_INK, width: 3, points: nwc },
   ];
-  const total: TrendLine = { key: "total", label: "Total Net Working Capital", color: TOTAL_INK, width: 3, points: nwc };
   const candidates = maps.map((m) => companyLine(m.c, labels, m.nwc));
 
   // Cash conversion cycle: days, so companies of any size compare. Not added —
@@ -266,12 +265,12 @@ export function WorkingCapitalTrend({ companies, view, bucket }: Props) {
   return (
     <div className="flex flex-col gap-4">
       <TrendChart title={mode === "group" ? "Working capital over time" : "Net Working Capital by company over time"} labels={labels}
-        fixed={mode === "group" ? group : [total]} candidates={mode === "company" ? candidates : []} fmt={fmtMoney} selectedLabel={bucket}
+        fixed={mode === "group" ? group : []} candidates={mode === "company" ? candidates : []} fmt={fmtMoney} selectedLabel={bucket}
         right={<Seg value={mode} onChange={setMode} options={[{ key: "group", label: "Group" }, { key: "company", label: "By company" }]} />}
         note={mode === "group"
           ? <>What the group has tied up short-term (Current Assets), what it owes short-term (Current Liabilities) and the difference
               (Net Working Capital, dark), at each period's end. A company is added only if it reports all three, as in the table's Total row.</>
-          : <>The group's Net Working Capital (dark) with the companies you pick. {GROUP_NOTE}</>} />
+          : <>Net Working Capital for each company you pick. The group Total is in the table below.</>} />
       <TrendChart title="Cash conversion cycle over time" labels={cccLabels} fixed={[]} candidates={cccCandidates} fmt={days} selectedLabel={bucket}
         refLines={[{ y: 60, label: "60 days · up to here is Healthy" }, { y: 90, label: "90 days · beyond is a Concern" }]} height={260}
         note={<>Days cash is tied up: inventory days + receivable days − payable days. Shorter is better. Days compare companies of any size,

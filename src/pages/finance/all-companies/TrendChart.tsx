@@ -17,7 +17,7 @@
 //
 // A hollow dot marks a total that does not cover every company.
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
+import { LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { Card, EmptyState } from "../dashboardKit";
 import { AXIS_TEXT_COLOR, GRID_LINE_COLOR } from "../format";
 import { labelsUpTo, rankLabel, topKeys, type TrendPoint } from "./trends";
@@ -66,10 +66,12 @@ interface Props {
   /** Benchmark lines, e.g. the PAT-margin band edges. */
   refLines?: { y: number; label: string }[];
   height?: number;
+  /** Draw the fixed lines as side-by-side bars per period (budget against actual) instead of lines. */
+  bars?: boolean;
 }
 
 export default function TrendChart({
-  title, note, labels: allLabels, fixed, candidates = [], fmt, axisFmt, selectedLabel, right, footnote, refLines = [], height = 280,
+  title, note, labels: allLabels, fixed, candidates = [], fmt, axisFmt, selectedLabel, right, footnote, refLines = [], height = 280, bars = false,
 }: Props) {
   // Up to and including the picked period. Labels arrive in date order, so a cut
   // by position is a cut by date. A pick the chart has no point for (a period
@@ -145,6 +147,25 @@ export default function TrendChart({
       {!hasValue ? (
         <EmptyState>Nothing to plot for these periods yet.</EmptyState>
       ) : (
+        bars ? (
+        <ResponsiveContainer width="100%" height={height}>
+          <BarChart data={data} margin={{ top: 10, right: 14, left: 4, bottom: 0 }} barGap={3} barCategoryGap="22%">
+            <CartesianGrid strokeDasharray="3 3" stroke={GRID_LINE_COLOR} vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11, fill: AXIS_TEXT_COLOR }} tickLine={false}
+              axisLine={{ stroke: GRID_LINE_COLOR }} interval="preserveStartEnd" minTickGap={16} />
+            {/* Bars start at zero: a truncated axis would exaggerate the gap between plan and actual. */}
+            <YAxis tickFormatter={axisFmt ?? fmt} tick={{ fontSize: 11, fill: AXIS_TEXT_COLOR }} tickLine={false} axisLine={false}
+              width={72} domain={[(m: number) => Math.min(0, m), "auto"]} />
+            <Tooltip cursor={{ fill: "rgba(20,22,26,0.05)" }}
+              content={(p: any) => <TrendTip active={p?.active} label={p?.label} lines={lines} fmt={fmt} />} />
+            {lines.map((ln) => (
+              <Bar key={ln.key} dataKey={ln.key} name={ln.label} fill={ln.color} radius={[3, 3, 0, 0]} maxBarSize={34} isAnimationActive={false}>
+                {data.map((d, i) => <Cell key={i} fill={ln.color} fillOpacity={d[`${ln.key}__partial`] ? 0.45 : 1} />)}
+              </Bar>
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+        ) : (
         <ResponsiveContainer width="100%" height={height}>
           <LineChart data={data} margin={{ top: 10, right: 14, left: 4, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={GRID_LINE_COLOR} vertical={false} />
@@ -173,6 +194,7 @@ export default function TrendChart({
             ))}
           </LineChart>
         </ResponsiveContainer>
+        )
       )}
 
       {/* Legend — always present, identity is never colour alone. */}
@@ -219,7 +241,8 @@ export default function TrendChart({
       {(hasPartial || footnote) && (
         <p className="text-[11px] text-gray-500 mt-3 leading-relaxed">
           {footnote}
-          {hasPartial && <> A <b>hollow dot</b> means the total covers only some of the companies for that period — usually the
+          {hasPartial && bars && <> A <b>paler bar</b> means the total covers only some of the companies for that period — hover for how many.</>}
+          {hasPartial && !bars && <> A <b>hollow dot</b> means the total covers only some of the companies for that period — usually the
             latest months, which fill in as each company reports, so a dip there is not a fall. Hover for how many.</>}
         </p>
       )}

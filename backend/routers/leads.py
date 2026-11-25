@@ -216,9 +216,12 @@ def delete_upload(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Undo an upload: remove the leads it last wrote, and its history entry.
+    """Undo an upload: remove the leads it CREATED, and its history entry.
 
-    Leads a later upload re-touched belong to that later upload and survive.
+    An upload also updates leads that were already stored (and re-tags them
+    with its id); those are older leads and must survive — only rows inserted
+    by this upload (created after it started) are deleted. Leads a later
+    upload re-touched carry that later upload's id and are not affected.
     """
     require_module(db, current_user, MODULE_KEY)
     if current_user.role not in ("superadmin", "leads_head"):
@@ -226,7 +229,10 @@ def delete_upload(
     log = db.query(UploadLog).filter(UploadLog.id == upload_id, UploadLog.module == "leads").first()
     if not log:
         raise HTTPException(status_code=404, detail="Upload not found")
-    removed = db.query(Lead).filter(Lead.upload_log_id == upload_id).delete(synchronize_session=False)
+    removed = db.query(Lead).filter(
+        Lead.upload_log_id == upload_id,
+        Lead.created_at >= log.uploaded_at,
+    ).delete(synchronize_session=False)
     db.delete(log)
     db.commit()
     return {"deleted_leads": removed}

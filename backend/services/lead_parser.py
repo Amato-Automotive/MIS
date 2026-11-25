@@ -241,16 +241,50 @@ def _parse_mobile(raw) -> str | None:
     return digits[:20]
 
 
-_ISO_DATE_RE = re.compile(r"^\s*\d{4}[-/.]\d{1,2}[-/.]\d{1,2}")
+# Text dates: "2026-01-07", "01/07/2026", "2026-01-07 00:00:00" ...
+_YEAR_FIRST_RE = re.compile(r"^\s*(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)")
+_YEAR_LAST_RE  = re.compile(r"^\s*(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?!\d)")
 
 
-def _parse_date(raw) -> str | None:
+def infer_date_order(values) -> dict:
+    """Decide, for the whole Date column, which of the two middle numbers is the day.
+
+    A single "2026-01-07" can't say whether it is 7 Jan or 1 Jul, but the
+    column can: the AFAC sheets write year-DAY-month ("2026-13-07" = 13 Jul
+    appears alongside it), so any value whose month slot is >12 settles it.
+    With no deciding value, fall back to day-first — the Indian convention
+    and what these sheets have always used.
+    """
+    yf = {"day_first": False, "month_first": False}
+    yl = {"day_first": False, "month_first": False}
+    for v in values:
+        if v is None or isinstance(v, (pd.Timestamp, datetime, date, int, float)):
+            continue
+        s = str(v)
+        m = _YEAR_FIRST_RE.match(s)
+        if m:
+            a, b = int(m.group(2)), int(m.group(3))
+            if a > 12: yf["day_first"] = True
+            if b > 12: yf["month_first"] = True
+            continue
+        m = _YEAR_LAST_RE.match(s)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            if a > 12: yl["day_first"] = True
+            if b > 12: yl["month_first"] = True
+    return {
+        "year_first_day_first": not (yf["month_first"] and not yf["day_first"]),
+        "year_last_day_first":  not (yl["month_first"] and not yl["day_first"]),
+    }
+
+
+def _parse_date(raw, order: dict | None = None) -> str | None:
     """Return an ISO date string from an Excel date cell, serial number or text.
 
-    Text dates are read day-first (05/11/2026 = 5 Nov) EXCEPT when they start
-    with a 4-digit year: pandas applies dayfirst to "2026-11-06" too and turns
-    it into 11 June, which silently filed leads under the wrong month.
+    `order` comes from infer_date_order over the whole column; without it text
+    dates are read day-first.
     """
+    order = order or {"year_first_day_first": True, "year_last_day_first": True}
     if raw is None:
         return None
     try:
@@ -267,8 +301,20 @@ def _parse_date(raw) -> str | None:
                 return (pd.Timestamp("1899-12-30") + pd.Timedelta(days=float(raw))).date().isoformat()
             return None
         s = str(raw).strip()
-        if _ISO_DATE_RE.match(s):
-            return pd.to_datetime(s, yearfirst=True, dayfirst=False).date().isoformat()
+        m = _YEAR_FIRST_RE.match(s)
+        if m:
+            y, a, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            d, mo = (a, b) if order["year_first_day_first"] else (b, a)
+            if mo > 12:  # this value contradicts the column; trust the value
+                d, mo = mo, d
+            return date(y, mo, d).isoformat()
+        m = _YEAR_LAST_RE.match(s)
+        if m:
+            a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            d, mo = (a, b) if order["year_last_day_first"] else (b, a)
+            if mo > 12:
+                d, mo = mo, d
+            return date(y, mo, d).isoformat()
         return pd.to_datetime(s, dayfirst=True).date().isoformat()
     except Exception:
         return None
@@ -379,6 +425,7 @@ def parse_leads_file(file_bytes: bytes, filename: str) -> Tuple[list[dict], list
     if missing:
         return [], [f"Missing required columns: {', '.join(sorted(missing))}. Expected: Date, Chanel (or Channel), Customer Name, Mobile Number, Car Type, Product Type, Location, State, Status, Reason, Review Status, Review Reason"]
 
+    date_order = infer_date_order(df_raw["Date"].tolist())
     skipped_summary = 0
     for idx, row in df_raw.iterrows():
         row_num = idx + 2  # 1-based + header row
@@ -393,7 +440,7 @@ def parse_leads_file(file_bytes: bytes, filename: str) -> Tuple[list[dict], list
             if row.get("Date") is None or pd.isna(row.get("Date", None)):
                 continue  # blank row
 
-        lead_date = _parse_date(row.get("Date"))
+        lead_date = _parse_date(row.get("Date"), date_order)
         if not lead_date:
             errors.append(f"Row {row_num}: Invalid or missing Date")
             continue

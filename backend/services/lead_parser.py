@@ -376,6 +376,34 @@ def _read_frame(file_bytes: bytes, is_csv: bool, sheet=None) -> pd.DataFrame:
     return df
 
 
+def _unflip_excel_dates(records: list[dict], from_date_cell: list[bool]) -> int:
+    """Undo Excel's month/day swap on date cells, judged against the file's typed dates.
+
+    When "01-07-2026" (1 Jul) is typed into Excel set to a month-first locale,
+    Excel converts it into a real date, 7 Jan; "31-07-2026" can't convert and
+    stays text. So a sheet ends up with text dates all in July plus date cells
+    scattered over Jan-Dec on the 7th. A date cell is swapped back only when
+    its own month is one no typed date uses AND the swapped date's month is
+    one they do. Files with no typed dates, or whose date cells already sit in
+    the typed months, are left exactly as they are.
+    """
+    text_months = {r["lead_date"][:7] for r, cell in zip(records, from_date_cell) if not cell}
+    if not text_months:
+        return 0
+    fixed = 0
+    for r, cell in zip(records, from_date_cell):
+        if not cell:
+            continue
+        d = date.fromisoformat(r["lead_date"])
+        if d.day > 12 or d.strftime("%Y-%m") in text_months:
+            continue
+        swapped = date(d.year, d.day, d.month)
+        if swapped.strftime("%Y-%m") in text_months:
+            r["lead_date"] = swapped.isoformat()
+            fixed += 1
+    return fixed
+
+
 # ── Main parser ─────────────────────────────────────────────────────────────
 
 def parse_leads_file(file_bytes: bytes, filename: str) -> Tuple[list[dict], list[str]]:
@@ -426,6 +454,7 @@ def parse_leads_file(file_bytes: bytes, filename: str) -> Tuple[list[dict], list
         return [], [f"Missing required columns: {', '.join(sorted(missing))}. Expected: Date, Chanel (or Channel), Customer Name, Mobile Number, Car Type, Product Type, Location, State, Status, Reason, Review Status, Review Reason"]
 
     date_order = infer_date_order(df_raw["Date"].tolist())
+    from_date_cell: list[bool] = []  # parallel to records: date came from a real Excel date cell
     skipped_summary = 0
     for idx, row in df_raw.iterrows():
         row_num = idx + 2  # 1-based + header row
@@ -465,6 +494,11 @@ def parse_leads_file(file_bytes: bytes, filename: str) -> Tuple[list[dict], list
             "review_reason":   _clean_str(row.get("Review Reason")),
         }
         records.append(record)
+        from_date_cell.append(isinstance(row.get("Date"), (pd.Timestamp, datetime, date)))
+
+    flipped = _unflip_excel_dates(records, from_date_cell)
+    if flipped:
+        errors.append(f"INFO: {flipped} dates that Excel had stored month/day-swapped were corrected")
 
     if skipped_summary:
         errors.append(f"INFO: {skipped_summary} summary/total rows were automatically skipped")

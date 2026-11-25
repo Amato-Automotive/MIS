@@ -155,9 +155,16 @@ async def upload_leads(
     # Copies of a key already stored more than once (left by uploads made
     # before this rule) are removed, so re-uploading a month's sheet repairs
     # that month's doubled counts.
+    # (A sheet with per-channel tabs plus a "Combined" tab lists each lead
+    # twice; the later copy wins, but its blank cells don't erase the earlier's.)
     by_key: dict[tuple, dict] = {}
     for rec in records:
-        by_key[lead_key(rec["lead_date"], rec["source"], rec["mobile_number"], rec["customer_name"])] = rec
+        key = lead_key(rec["lead_date"], rec["source"], rec["mobile_number"], rec["customer_name"])
+        if key in by_key:
+            merged = dict(by_key[key])
+            merged.update({k: v for k, v in rec.items() if v is not None})
+            rec = merged
+        by_key[key] = rec
     within_file_dupes = len(records) - len(by_key)
 
     inserted = updated = duplicates_removed = 0

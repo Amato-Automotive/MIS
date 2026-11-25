@@ -50,6 +50,16 @@ function Seg<T extends string>({ value, options, onChange }: { value: T; options
 }
 
 const SELECT_CLS = "no-print text-[11px] font-semibold text-gray-700 bg-white border border-[#EAE3D6] rounded-lg px-2 py-1 max-w-[16rem]";
+
+/** "All companies (group)" or one company — for charts that add the companies up by default. */
+function CompanyPick({ value, companies, onChange }: { value: string; companies: ConsolidatedCompany[]; onChange: (id: string) => void }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} className={SELECT_CLS} aria-label="Company">
+      <option value="">All companies (group)</option>
+      {companies.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+    </select>
+  );
+}
 const pct1 = (v: number) => `${v.toFixed(1)}%`;
 const days = (v: number) => `${Math.round(v).toLocaleString("en-IN")} days`;
 
@@ -66,6 +76,7 @@ type PlKey = (typeof PL_METRICS)[number]["key"];
 
 export function PlTrends({ companies, view, bucket }: Props) {
   const [metric, setMetric] = useState<PlKey>("sales");
+  const [marginMode, setMarginMode] = useState<"group" | "company">("group");
   const eligible = useMemo(() => totalled(companies), [companies]);
   const labels = useMemo(
     () => labelsFor(eligible.flatMap((c) => PL_METRICS.map((m) => m.pick(c))), "flow", view), [eligible, view]);
@@ -79,6 +90,11 @@ export function PlTrends({ companies, view, bucket }: Props) {
 
   const margin: TrendLine[] = [{ key: "margin", label: "Total PAT margin", color: BLUE, width: 3,
     points: marginByLabel(labels, maps.map((m) => ({ sales: m.sales, pat: m.pat }))) }];
+  // One margin line per company — each worked out from that company's own PAT and Sales.
+  const marginCandidates: TrendCandidate[] = maps.map((m) => ({
+    key: `${COMPANY_KEY}${m.c.id}`, label: shortName(m.c), title: m.c.label,
+    points: marginByLabel(labels, [{ sales: m.sales, pat: m.pat }]),
+  }));
 
   return (
     <div className="flex flex-col gap-4">
@@ -87,11 +103,17 @@ export function PlTrends({ companies, view, bucket }: Props) {
         right={<Seg value={metric} onChange={setMetric} options={PL_METRICS.map((m) => ({ key: m.key, label: m.label }))} />}
         note={<>How {label} has moved, month by month, quarter by quarter or year by year as the view is set, one line per company:
           the five biggest to start, add or remove companies below. Exact figures, and the group Total, are in the table below.</>} />
-      <TrendChart title="Group PAT margin over time" labels={labels} fixed={margin} fmt={pct1} selectedLabel={bucket}
+      <TrendChart title={marginMode === "group" ? "Group PAT margin over time" : "PAT margin by company over time"} labels={labels}
+        fixed={marginMode === "group" ? margin : []} candidates={marginMode === "company" ? marginCandidates : []}
+        fmt={pct1} selectedLabel={bucket}
+        right={<Seg value={marginMode} onChange={setMarginMode} options={[{ key: "group", label: "Group" }, { key: "company", label: "By company" }]} />}
         refLines={MARGIN_BANDS.filter((b) => b.min > -Infinity).map((b) => ({ y: b.min * 100, label: `${b.label} from ${b.min * 100}%` }))}
         height={240}
-        note={<>Total PAT divided by total Sales for each period — worked out from the totals, never an average of the companies'
-          own margins. The dotted lines are the band edges management classifies against (Red, Orange, Green, Blue).</>} />
+        note={marginMode === "group"
+          ? <>Total PAT divided by total Sales for each period — worked out from the totals, never an average of the companies'
+              own margins. The dotted lines are the band edges management classifies against (Red, Orange, Green, Blue).</>
+          : <>Each company's own PAT divided by its own Sales, for the companies you pick. The dotted lines are the band edges
+              management classifies against (Red, Orange, Green, Blue).</>} />
     </div>
   );
 }
@@ -107,7 +129,13 @@ type BudgetKey = (typeof BUDGET_METRICS)[number]["key"];
 export function BudgetTrend({ companies, view, bucket }: Props) {
   const [metric, setMetric] = useState<BudgetKey>("revenue");
   const spec = BUDGET_METRICS.find((m) => m.key === metric)!;
-  const eligible = useMemo(() => totalled(companies).filter((c) => (c.budget?.lines.length ?? 0) > 0), [companies]);
+  // "" = the whole group; otherwise one company's own plan against its own actual.
+  const [companyId, setCompanyId] = useState("");
+  const allEligible = useMemo(() => totalled(companies).filter((c) => (c.budget?.lines.length ?? 0) > 0), [companies]);
+  const eligible = useMemo(
+    () => (companyId ? allEligible.filter((c) => c.id === companyId) : allEligible), [allEligible, companyId]);
+  // The group filter can remove the picked company; fall back to the group rather than an empty chart.
+  const single = companyId !== "" && eligible.length === 1 ? eligible[0] : null;
 
   const per = useMemo(() => eligible.map((c) => {
     const it = c.budget!.lines.find((li) => (spec.slugs as readonly string[]).includes(slugOf(li.line_key)));
@@ -136,17 +164,29 @@ export function BudgetTrend({ companies, view, bucket }: Props) {
     { key: "actual", label: `Actual · ${spec.label}`, color: BLUE, points: actualPts },
   ];
   return (
-    <TrendChart title={`Budget vs actual over time · ${spec.label}`} labels={labels} fixed={fixed} fmt={fmtMoney} selectedLabel={bucket} bars
-      right={<Seg value={metric} onChange={setMetric} options={BUDGET_METRICS.map((m) => ({ key: m.key, label: m.label }))} />}
-      note={<>The group's plan (grey bar) beside what was actually reported (blue bar), period by period. Both bars add only the companies that
-        have a budget <b>and</b> an actual for that period, so they compare like with like — the same rule as the Budget table's Total row.
-        Where the two bars are level, the group is on plan.</>} />
+    <TrendChart title={`Budget vs actual over time · ${spec.label}${single ? ` · ${shortName(single)}` : ""}`} labels={labels} fixed={fixed}
+      fmt={fmtMoney} selectedLabel={bucket} bars
+      right={<div className="flex flex-wrap items-center justify-end gap-2">
+        <CompanyPick value={single ? companyId : ""} companies={allEligible} onChange={setCompanyId} />
+        <Seg value={metric} onChange={setMetric} options={BUDGET_METRICS.map((m) => ({ key: m.key, label: m.label }))} />
+      </div>}
+      note={single
+        ? <>{single.label}'s own plan (grey bar) beside what it actually reported (blue bar), period by period. Where the two bars are level,
+            the company is on plan. Pick “All companies” above for the group.</>
+        : <>The group's plan (grey bar) beside what was actually reported (blue bar), period by period. Both bars add only the companies that
+            have a budget <b>and</b> an actual for that period, so they compare like with like — the same rule as the Budget table's Total row.
+            Where the two bars are level, the group is on plan. Pick a company above to see it on its own.</>} />
   );
 }
 
 // ── Income tax ───────────────────────────────────────────────────────────────
 export function IncomeTaxTrend({ companies, view, bucket }: Props) {
-  const eligible = useMemo(() => totalled(companies).filter((c) => (c.budget?.tax.length ?? 0) > 0), [companies]);
+  const [companyId, setCompanyId] = useState("");
+  const allEligible = useMemo(() => totalled(companies).filter((c) => (c.budget?.tax.length ?? 0) > 0), [companies]);
+  const eligible = useMemo(
+    () => (companyId ? allEligible.filter((c) => c.id === companyId) : allEligible), [allEligible, companyId]);
+  // The group filter can remove the picked company; fall back to the group rather than an empty chart.
+  const single = companyId !== "" && eligible.length === 1 ? eligible[0] : null;
   const perCompany = useMemo(() => eligible.map((c) => INCOME_TAX_COLUMNS.map((col) =>
     toMap(c.budget!.tax.find((li) => slugOf(li.line_key) === col.slug)?.series, "stock", view))), [eligible, view]);
   const labels = useMemo(
@@ -156,17 +196,25 @@ export function IncomeTaxTrend({ companies, view, bucket }: Props) {
     key: col.slug, label: col.label, color: SERIES_COLORS[i], width: 2.5, points: sums[i],
   }));
   return (
-    <TrendChart title="Income tax position over time" labels={labels} fixed={fixed} fmt={fmtMoney} selectedLabel={bucket}
-      note={<>The group's running tax position: profit before tax accumulated so far, the tax on it, what has been deposited (TDS/TCS and
-        advance tax) and what is still owed. Each is a position at the period's end, not a flow. The four lines add the same companies, so
-        pending tax is always accumulated tax less tax deposited.</>} />
+    <TrendChart title={`Income tax position over time${single ? ` · ${shortName(single)}` : ""}`} labels={labels} fixed={fixed}
+      fmt={fmtMoney} selectedLabel={bucket}
+      right={<CompanyPick value={single ? companyId : ""} companies={allEligible} onChange={setCompanyId} />}
+      note={<>{single ? <>{single.label}'s running tax position</> : <>The group's running tax position</>}: profit before tax accumulated
+        so far, the tax on it, what has been deposited (TDS/TCS and advance tax) and what is still owed. Each is a position at the period's end,
+        not a flow. The four lines add the same companies, so pending tax is always accumulated tax less tax deposited.
+        {single ? <> Pick “All companies” above for the group.</> : <> Pick a company above to see it on its own.</>}</>} />
   );
 }
 
 // ── Sales account ────────────────────────────────────────────────────────────
 export function SalesTrend({ companies, view, bucket }: Props) {
   const [mode, setMode] = useState<"channel" | "company">("channel");
-  const eligible = useMemo(() => totalled(companies), [companies]);
+  const [companyId, setCompanyId] = useState("");
+  const allEligible = useMemo(() => totalled(companies), [companies]);
+  // The channel view can be narrowed to one company; the by-company view always lists them all.
+  const picked = companyId ? allEligible.find((c) => c.id === companyId) ?? null : null;
+  const eligible = useMemo(
+    () => (mode === "channel" && picked ? [picked] : allEligible), [allEligible, mode, picked]);
   const labels = useMemo(
     () => labelsFor(eligible.flatMap((c) => [c.sales_total, ...c.sales_channels.map((ch) => ch.series)]), "flow", view), [eligible, view]);
   const totals = useMemo(() => sumByLabel(labels, eligible.map((c) => toMap(c.sales_total, "flow", view))), [labels, eligible, view]);
@@ -191,11 +239,17 @@ export function SalesTrend({ companies, view, bucket }: Props) {
   const candidates = eligible.map((c) => companyLine(c, labels, toMap(c.sales_total, "flow", view)));
 
   return (
-    <TrendChart title={mode === "channel" ? "Sales by channel over time" : "Sales by company over time"} labels={labels}
+    <TrendChart title={mode === "channel" ? `Sales by channel over time${picked ? ` · ${shortName(picked)}` : ""}` : "Sales by company over time"} labels={labels}
       fixed={mode === "channel" ? [total, ...channelLines] : []}
       candidates={mode === "company" ? candidates : []} fmt={fmtMoney} selectedLabel={bucket}
-      right={<Seg value={mode} onChange={setMode} options={[{ key: "channel", label: "By channel" }, { key: "company", label: "By company" }]} />}
-      note={mode === "channel"
+      right={<div className="flex flex-wrap items-center justify-end gap-2">
+        {mode === "channel" && <CompanyPick value={picked ? companyId : ""} companies={allEligible} onChange={setCompanyId} />}
+        <Seg value={mode} onChange={setMode} options={[{ key: "channel", label: "By channel" }, { key: "company", label: "By company" }]} />
+      </div>}
+      note={mode === "channel" && picked
+        ? <>{picked.label}'s Sales split by the channels in its Sales Accounts (Branch Purchase sits below the Total and is not a sale). The
+            dark line is its total Sales. Pick “All companies” above for the group.</>
+        : mode === "channel"
         ? <>Group Sales split by the channels in each company's Sales Accounts (Branch Purchase sits below the Total and is not a sale). The
             dark line is total Sales; each coloured line is one channel added across the companies that have it. {GROUP_NOTE}</>
         : <>Sales for each company you pick, the five biggest to start. The group Total is in the table below.</>} />

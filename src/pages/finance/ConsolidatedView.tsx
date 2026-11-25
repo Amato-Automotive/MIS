@@ -37,6 +37,7 @@ import { sumColumn, sumTogether, totalMargin } from "./all-companies/totals";
 import SalesAccountSection from "./all-companies/SalesAccountSection";
 import WorkingCapitalSection from "./all-companies/WorkingCapitalSection";
 import RatioScorecard from "./all-companies/RatioScorecard";
+import OverviewSection from "./all-companies/OverviewSection";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -45,6 +46,7 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 // and a hash would also land in the router's URL. The scroll margin keeps the
 // sticky period bar from covering the heading it lands on.
 const SECTIONS = [
+  { id: "allco-overview", label: "Overview" },
   { id: "allco-pl", label: "Profit & Loss" },
   { id: "allco-budget", label: "Budget" },
   { id: "allco-sales", label: "Sales Account" },
@@ -102,6 +104,8 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
   );
   const bucketLabels = useMemo(() => bucketLabelsOf(allPoints, "flow", view), [allPoints, view]);
   const effBucket = bucketLabels.includes(bucket) ? bucket : (bucketLabels[bucketLabels.length - 1] ?? "");
+  // The period before the picked one, for the Overview's change under each tile.
+  const prevBucket = bucketLabels[bucketLabels.indexOf(effBucket) - 1] ?? null;
 
   const latestOf = (series: Parameters<typeof bucketLabelsOf>[0], kind: "stock" | "flow") => {
     const labels = bucketLabelsOf(series, kind, view);
@@ -194,6 +198,10 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
           <button onClick={() => setGroup("")} className="font-semibold text-brand-orange hover:underline">Show all groups</button>
         </EmptyState>
       ) : (<>
+      {anchor("allco-overview")}
+      <SectionHeading accent={SOURCES_COLOR}>Overview · {effBucket || "—"}</SectionHeading>
+      <OverviewSection companies={companies} view={view} bucket={effBucket} prevBucket={prevBucket} />
+
       {anchor("allco-pl")}
       <SectionHeading accent={REVENUE_COLOR}>Profit &amp; Loss · {effBucket || "—"}</SectionHeading>
       <PlTrends companies={companies} view={view} bucket={effBucket} />

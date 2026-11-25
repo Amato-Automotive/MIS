@@ -1,5 +1,5 @@
-import { useState, useCallback, useRef } from "react";
-import { Upload, FileSpreadsheet, CheckCircle2, XCircle, Clock, ChevronDown, ChevronUp } from "lucide-react";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { Upload, FileSpreadsheet, CheckCircle2, XCircle, Clock, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -8,9 +8,12 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 interface UploadResult {
   filename: string;
   rows_inserted: number;
+  rows_updated?: number;
+  rows_duplicate_in_file?: number;
   rows_skipped_summary: number;
   rows_failed: number;
   errors: string[];
+  info?: string[];
   status: string;
 }
 
@@ -31,8 +34,9 @@ function formatDate(iso: string) {
   });
 }
 
-export default function LeadsUploadTab() {
-  const { token } = useAuth();
+export default function LeadsUploadTab({ onUploaded }: { onUploaded?: () => void }) {
+  const { token, user } = useAuth();
+  const canDelete = user?.role === "superadmin" || user?.role === "leads_head";
   const [dragging, setDragging] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -55,7 +59,22 @@ export default function LeadsUploadTab() {
     } catch { /* ignore */ }
   }, [token]);
 
-  useState(() => { loadHistory(); });
+  useEffect(() => { loadHistory(); }, [loadHistory]);
+
+  const deleteUpload = async (h: HistoryItem) => {
+    if (!window.confirm(`Delete upload "${h.filename}" and the leads it added? This cannot be undone.`)) return;
+    const res = await fetch(`${API_URL}/leads/uploads/${h.id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      window.alert(data.detail || "Delete failed");
+      return;
+    }
+    loadHistory();
+    onUploaded?.();
+  };
 
   const handleFile = (f: File) => {
     if (!f.name.match(/\.(xlsx|xls|csv)$/i)) {
@@ -92,6 +111,7 @@ export default function LeadsUploadTab() {
       setResult(data);
       setFile(null);
       loadHistory();
+      onUploaded?.();
     } catch (err: any) {
       setResult({
         filename: file.name,
@@ -213,13 +233,13 @@ export default function LeadsUploadTab() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
             className={`rounded-2xl border p-5 ${
-              result.rows_failed === 0
+              result.status !== "Failed" && result.rows_failed === 0
                 ? "bg-green-50 border-green-200"
                 : "bg-amber-50 border-amber-200"
             }`}
           >
             <div className="flex items-start gap-4">
-              {result.rows_failed === 0 ? (
+              {result.status !== "Failed" && result.rows_failed === 0 ? (
                 <CheckCircle2 className="w-6 h-6 text-green-500 shrink-0 mt-0.5" />
               ) : (
                 <XCircle className="w-6 h-6 text-amber-500 shrink-0 mt-0.5" />
@@ -228,8 +248,18 @@ export default function LeadsUploadTab() {
                 <p className="font-semibold text-gray-800">{result.filename}</p>
                 <div className="flex flex-wrap gap-4 mt-2 text-sm">
                   <span className="text-green-700 font-medium">
-                    ✅ {result.rows_inserted} rows inserted
+                    ✅ {result.rows_inserted} new leads
                   </span>
+                  {(result.rows_updated ?? 0) > 0 && (
+                    <span className="text-blue-600 font-medium">
+                      🔄 {result.rows_updated} existing leads updated
+                    </span>
+                  )}
+                  {(result.rows_duplicate_in_file ?? 0) > 0 && (
+                    <span className="text-gray-600 font-medium">
+                      ⧉ {result.rows_duplicate_in_file} repeated rows in file merged
+                    </span>
+                  )}
                   {result.rows_skipped_summary > 0 && (
                     <span className="text-blue-600 font-medium">
                       ⏭ {result.rows_skipped_summary} summary rows skipped
@@ -241,6 +271,9 @@ export default function LeadsUploadTab() {
                     </span>
                   )}
                 </div>
+                {(result.info ?? []).filter((m) => !m.includes("summary")).map((m, i) => (
+                  <p key={i} className="mt-2 text-xs text-gray-600">{m}</p>
+                ))}
                 {result.errors.length > 0 && (
                   <div className="mt-3">
                     <button
@@ -280,10 +313,11 @@ export default function LeadsUploadTab() {
               <thead>
                 <tr className="border-b border-orange-50 bg-orange-50/40">
                   <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500">File</th>
-                  <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500">Inserted</th>
+                  <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500">Rows saved</th>
                   <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500">Failed</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500">Status</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500">Date</th>
+                  {canDelete && <th className="px-4 py-3" />}
                 </tr>
               </thead>
               <tbody>
@@ -299,13 +333,23 @@ export default function LeadsUploadTab() {
                       <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${
                         h.status === "Done"
                           ? "bg-green-100 text-green-700"
+                          : h.status === "Failed"
+                          ? "bg-red-100 text-red-700"
                           : "bg-amber-100 text-amber-700"
                       }`}>
-                        {h.status === "Done" ? <CheckCircle2 size={10} /> : <Clock size={10} />}
+                        {h.status === "Done" ? <CheckCircle2 size={10} /> : h.status === "Failed" ? <XCircle size={10} /> : <Clock size={10} />}
                         {h.status}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-gray-500 text-xs">{formatDate(h.uploaded_at)}</td>
+                    {canDelete && (
+                      <td className="px-4 py-3 text-right">
+                        <button onClick={() => deleteUpload(h)} title="Delete this upload and its leads"
+                          className="text-gray-400 hover:text-red-600 transition">
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Users, TrendingUp, PhoneCall, CheckCircle2, Clock, XCircle,
@@ -120,13 +120,20 @@ export default function LeadsPage() {
 
   const headers = { Authorization: `Bearer ${token}` };
 
-  // ── Load filter options once ───────────────────────────────────────────────
-  useEffect(() => {
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // ── Filter options (months / channels / ASMs …) ────────────────────────────
+  // Re-loaded after every upload and on Refresh: they used to load once on
+  // mount, so a freshly uploaded month never appeared in the Year/Month
+  // filter (and new ASMs/states never in theirs) until a full page reload.
+  const loadFilterOptions = useCallback(() => {
     fetch(`${API_URL}/leads/filter-options`, { headers })
-      .then((r) => r.json())
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`filter-options ${r.status}`))))
       .then(setFilterOptions)
       .catch(console.error);
   }, [token]);
+
+  useEffect(() => { loadFilterOptions(); }, [loadFilterOptions]);
 
   // ── Build query params from active filters ─────────────────────────────────
   const buildParams = useCallback((f: ActiveFilters) => {
@@ -148,7 +155,9 @@ export default function LeadsPage() {
   }, [filterOptions]);
 
   // ── Fetch all analytics + list whenever filters change ────────────────────
+  const fetchSeq = useRef(0);
   const fetchData = useCallback(async (f: ActiveFilters) => {
+    const seq = ++fetchSeq.current;
     setLoading(true);
     const qs = buildParams(f);
     try {
@@ -156,7 +165,14 @@ export default function LeadsPage() {
         fetch(`${API_URL}/leads/analytics${qs ? "?" + qs : ""}`, { headers }),
         fetch(`${API_URL}/leads/list?per_page=20${qs ? "&" + qs : ""}`, { headers }),
       ]);
+      if (!analyticsRes.ok || !listRes.ok) {
+        const bad = !analyticsRes.ok ? analyticsRes : listRes;
+        const body = await bad.json().catch(() => ({}));
+        throw new Error(body.detail || `Request failed (${bad.status})`);
+      }
       const [aData, lData] = await Promise.all([analyticsRes.json(), listRes.json()]);
+      // A slower, older request must not overwrite a newer filter's result.
+      if (seq !== fetchSeq.current) return;
       // Format trend periods
       if (aData.trends) {
         aData.trends = aData.trends.map((t: any) => ({
@@ -169,8 +185,13 @@ export default function LeadsPage() {
       setAnalytics(aData);
       setLeads(lData.data || []);
       setTotalLeads(lData.total || 0);
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
+      setLoadError(null);
+    } catch (e: any) {
+      console.error(e);
+      if (seq === fetchSeq.current) setLoadError(e?.message || "Could not load leads");
+    } finally {
+      if (seq === fetchSeq.current) setLoading(false);
+    }
   }, [token, buildParams]);
 
   useEffect(() => { fetchData(filters); }, [filters, fetchData]);
@@ -265,7 +286,7 @@ export default function LeadsPage() {
         <div className="flex items-center gap-2">
           {activeTab === "analytics" && (
             <>
-              <button onClick={() => fetchData(filters)}
+              <button onClick={() => { loadFilterOptions(); fetchData(filters); }}
                 className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-orange-500 transition-colors px-3 py-2 rounded-xl border border-gray-200 hover:border-orange-200">
                 <RefreshCw size={13} /> Refresh
               </button>
@@ -303,7 +324,7 @@ export default function LeadsPage() {
         </div>
       </motion.div>
 
-      {activeTab === "upload" && <LeadsUploadTab />}
+      {activeTab === "upload" && <LeadsUploadTab onUploaded={loadFilterOptions} />}
 
       {activeTab === "analytics" && (
         <>
@@ -384,6 +405,12 @@ export default function LeadsPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {loadError && !loading && (
+        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          Couldn't load leads: {loadError}
+        </div>
+      )}
 
       {/* Loading overlay */}
       {loading && (

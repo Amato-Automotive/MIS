@@ -112,6 +112,12 @@ def apply_filters_text(where_clauses: list, params: dict, filters: dict):
         params["state"] = filters["state"]
 
 
+def lead_key(lead_date, source, mobile, name) -> tuple:
+    """Identity of one lead across uploads (see upload_leads)."""
+    who = (mobile or "").strip() or "name:" + (name or "").strip().lower()
+    return (str(lead_date), (source or "").strip().lower(), who)
+
+
 # ── Upload ───────────────────────────────────────────────────────────────────
 @router.post("/upload")
 async def upload_leads(
@@ -140,20 +146,45 @@ async def upload_leads(
 
     records, errors = parse_leads_file(file_bytes, filename)
 
-    inserted = 0
+    # ── Upsert, not append ────────────────────────────────────────────────────
+    # The same monthly sheet gets uploaded again as it fills up (and as review
+    # statuses move Follow Up → Closed Won). Appending doubled every lead each
+    # time; instead a lead already on file is updated in place and only new
+    # ones are inserted. Identity = date + channel + mobile (name when there is
+    # no mobile). Repeats of a key inside one file collapse to the last row.
+    by_key: dict[tuple, dict] = {}
     for rec in records:
-        lead = Lead(id=uuid.uuid4(), upload_log_id=log.id, uploaded_by=current_user.id, **rec)
-        db.add(lead)
-        inserted += 1
+        by_key[lead_key(rec["lead_date"], rec["source"], rec["mobile_number"], rec["customer_name"])] = rec
+    within_file_dupes = len(records) - len(by_key)
+
+    inserted = updated = 0
+    if by_key:
+        dates = [date.fromisoformat(k[0]) for k in by_key]
+        existing: dict[tuple, Lead] = {}
+        for lead in db.query(Lead).filter(Lead.lead_date >= min(dates), Lead.lead_date <= max(dates)):
+            existing.setdefault(
+                lead_key(str(lead.lead_date), lead.source, lead.mobile_number, lead.customer_name), lead
+            )
+        for key, rec in by_key.items():
+            lead = existing.get(key)
+            if lead is None:
+                db.add(Lead(id=uuid.uuid4(), upload_log_id=log.id, uploaded_by=current_user.id, **rec))
+                inserted += 1
+            else:
+                for field, value in rec.items():
+                    setattr(lead, field, value)
+                lead.upload_log_id = log.id  # type: ignore[assignment]
+                updated += 1
 
     info_msgs   = [e for e in errors if e.startswith("INFO:")]
     real_errors = [e for e in errors if not e.startswith("INFO:")]
     skipped = sum(int(m.split()[1]) for m in info_msgs if "summary" in m) if info_msgs else 0
+    fatal = not records and bool(real_errors)
 
-    log.rows_total   = inserted + len(real_errors) + skipped  # type: ignore[assignment]
-    log.rows_success = inserted                                # type: ignore[assignment]
-    log.rows_failed  = len(real_errors)                       # type: ignore[assignment]
-    log.status       = "Done"                                  # type: ignore[assignment]
+    log.rows_total   = len(records) + len(real_errors) + skipped  # type: ignore[assignment]
+    log.rows_success = inserted + updated                         # type: ignore[assignment]
+    log.rows_failed  = len(real_errors)                           # type: ignore[assignment]
+    log.status       = "Failed" if fatal else "Done"              # type: ignore[assignment]
     log.error_details = "\n".join(real_errors) if real_errors else None  # type: ignore[assignment]
     db.commit()
 
@@ -161,11 +192,36 @@ async def upload_leads(
         "upload_id": str(log.id),
         "filename": file.filename,
         "rows_inserted": inserted,
+        "rows_updated": updated,
+        "rows_duplicate_in_file": within_file_dupes,
         "rows_skipped_summary": skipped,
         "rows_failed": len(real_errors),
         "errors": real_errors[:20],
-        "status": "Done",
+        "info": [m[len("INFO:"):].strip() for m in info_msgs],
+        "status": log.status,
     }
+
+
+@router.delete("/uploads/{upload_id}")
+def delete_upload(
+    upload_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Undo an upload: remove the leads it last wrote, and its history entry.
+
+    Leads a later upload re-touched belong to that later upload and survive.
+    """
+    require_module(db, current_user, MODULE_KEY)
+    if current_user.role not in ("superadmin", "leads_head"):
+        raise HTTPException(status_code=403, detail="Only a superadmin or leads head can delete an upload")
+    log = db.query(UploadLog).filter(UploadLog.id == upload_id, UploadLog.module == "leads").first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    removed = db.query(Lead).filter(Lead.upload_log_id == upload_id).delete(synchronize_session=False)
+    db.delete(log)
+    db.commit()
+    return {"deleted_leads": removed}
 
 
 # ── Filter options (populate dropdowns) ───────────────────────────────────────

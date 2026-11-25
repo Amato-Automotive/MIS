@@ -4,6 +4,7 @@ Handles Excel/CSV ingestion with normalization, ASM extraction, and reason class
 """
 import re
 import io
+from datetime import date, datetime
 import pandas as pd
 from typing import Tuple
 
@@ -212,7 +213,12 @@ def _is_summary_row(row: pd.Series) -> bool:
 
 
 def _parse_mobile(raw) -> str | None:
-    """Convert numeric mobile to string. Returns None for NaN."""
+    """Normalise a mobile number so the same customer always gets the same key.
+
+    Excel hands back floats (9876543210.0); people type "+91 98765 43210" or
+    "098765-43210". Indian mobiles are reduced to their 10 digits; anything that
+    doesn't look like one keeps its digits (or raw text if it has none).
+    """
     if raw is None:
         return None
     try:
@@ -220,15 +226,31 @@ def _parse_mobile(raw) -> str | None:
             return None
     except (TypeError, ValueError):
         pass
-    try:
-        return str(int(float(str(raw))))
-    except (ValueError, TypeError):
-        s = str(raw).strip()
-        return None if (s == "" or s.lower() == "nan") else s[:50]
+    if isinstance(raw, float) and raw.is_integer():
+        raw = int(raw)
+    s = str(raw).strip()
+    if s == "" or s.lower() == "nan":
+        return None
+    digits = re.sub(r"\D", "", s)
+    if not digits:
+        return s[:20]
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    elif len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    return digits[:20]
+
+
+_ISO_DATE_RE = re.compile(r"^\s*\d{4}[-/.]\d{1,2}[-/.]\d{1,2}")
 
 
 def _parse_date(raw) -> str | None:
-    """Return ISO date string from pandas Timestamp or string."""
+    """Return an ISO date string from an Excel date cell, serial number or text.
+
+    Text dates are read day-first (05/11/2026 = 5 Nov) EXCEPT when they start
+    with a 4-digit year: pandas applies dayfirst to "2026-11-06" too and turns
+    it into 11 June, which silently filed leads under the wrong month.
+    """
     if raw is None:
         return None
     try:
@@ -237,10 +259,75 @@ def _parse_date(raw) -> str | None:
     except (TypeError, ValueError):
         pass
     try:
-        return pd.to_datetime(raw, dayfirst=True).date().isoformat()
+        if isinstance(raw, (pd.Timestamp, datetime, date)):
+            return pd.Timestamp(raw).date().isoformat()
+        if isinstance(raw, (int, float)):
+            # Excel serial day number (CSV exports / unformatted cells).
+            if 20000 <= float(raw) <= 80000:
+                return (pd.Timestamp("1899-12-30") + pd.Timedelta(days=float(raw))).date().isoformat()
+            return None
+        s = str(raw).strip()
+        if _ISO_DATE_RE.match(s):
+            return pd.to_datetime(s, yearfirst=True, dayfirst=False).date().isoformat()
+        return pd.to_datetime(s, dayfirst=True).date().isoformat()
     except Exception:
         return None
 
+
+# ── Header detection ────────────────────────────────────────────────────────
+# Canonical column name → accepted spellings (compared lowercased, with
+# punctuation and repeated spaces removed). Sheets are typed by hand, so
+# "Channel" vs "Chanel", "Mobile No." and trailing spaces all turn up.
+_HEADER_ALIASES = {
+    "Date":          ["date", "lead date", "call date"],
+    "Chanel":        ["chanel", "channel", "source", "lead source"],
+    "Customer Name": ["customer name", "name", "customer"],
+    "Mobile Number": ["mobile number", "mobile no", "mobile", "phone", "phone number",
+                      "contact number", "contact no", "mob no", "number"],
+    "Car Type":      ["car type", "car", "car model", "vehicle"],
+    "Product Type":  ["product type", "product"],
+    "Location":      ["location", "city"],
+    "State":         ["state"],
+    "Status":        ["status", "call status"],
+    "Reason":        ["reason", "remarks", "remark"],
+    "Review Status": ["review status"],
+    "Review Reason": ["review reason", "review remarks", "review remark"],
+}
+_ALIAS_LOOKUP = {alias: canon for canon, aliases in _HEADER_ALIASES.items() for alias in aliases}
+REQUIRED_COLS = {"Date", "Chanel", "Mobile Number"}
+
+
+def _norm_header(h) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", str(h).lower())).strip()
+
+
+def _canonicalise_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename = {}
+    seen = set()
+    for col in df.columns:
+        canon = _ALIAS_LOOKUP.get(_norm_header(col))
+        if canon and canon not in seen:
+            rename[col] = canon
+            seen.add(canon)
+    return df.rename(columns=rename)
+
+
+def _read_frame(file_bytes: bytes, is_csv: bool, sheet=None) -> pd.DataFrame:
+    """Read one table, finding the header row even if title rows sit above it."""
+    def read(header):
+        if is_csv:
+            return pd.read_csv(io.BytesIO(file_bytes), header=header)
+        return pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet, header=header)
+
+    df = _canonicalise_columns(read(0))
+    if REQUIRED_COLS <= set(df.columns):
+        return df
+    raw = read(None)
+    for i in range(min(15, len(raw))):
+        names = {_ALIAS_LOOKUP.get(_norm_header(v)) for v in raw.iloc[i].tolist() if pd.notna(v)}
+        if REQUIRED_COLS <= names:
+            return _canonicalise_columns(read(i))
+    return df
 
 
 # ── Main parser ─────────────────────────────────────────────────────────────
@@ -257,9 +344,10 @@ def parse_leads_file(file_bytes: bytes, filename: str) -> Tuple[list[dict], list
     errors = []
     records = []
 
+    is_csv = filename.lower().endswith(".csv")
     try:
-        if filename.lower().endswith(".csv"):
-            df_raw = pd.read_csv(io.BytesIO(file_bytes))
+        if is_csv:
+            df_raw = _read_frame(file_bytes, True)
         else:
             xl = pd.ExcelFile(io.BytesIO(file_bytes))
             # If a primary "Sheet1" tab exists, use only that — secondary tabs
@@ -271,20 +359,25 @@ def parse_leads_file(file_bytes: bytes, filename: str) -> Tuple[list[dict], list
             frames = []
             for sheet in sheets_to_read:
                 try:
-                    frames.append(pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet))
+                    frame = _read_frame(file_bytes, False, sheet)
                 except Exception as e:
                     errors.append(f"Sheet '{sheet}' could not be read: {e}")
+                    continue
+                if REQUIRED_COLS <= set(frame.columns):
+                    frames.append(frame)
+                elif len(sheets_to_read) > 1:
+                    errors.append(f"INFO: tab '{sheet}' skipped — no Date / Chanel / Mobile Number header found")
             if not frames:
-                return [], ["No readable sheets found in file"]
-            df_raw = pd.concat(frames, ignore_index=True)
+                df_raw = _read_frame(file_bytes, False, sheets_to_read[0]) if sheets_to_read else pd.DataFrame()
+            else:
+                df_raw = pd.concat(frames, ignore_index=True)
     except Exception as e:
         return [], [f"Could not open file: {e}"]
 
     # Validate required columns exist
-    required_cols = {"Date", "Chanel", "Mobile Number"}
-    missing = required_cols - set(df_raw.columns)
+    missing = REQUIRED_COLS - set(df_raw.columns)
     if missing:
-        return [], [f"Missing required columns: {', '.join(missing)}. Expected: Date, Chanel, Customer Name, Mobile Number, Car Type, Product Type, Location, State, Status, Reason, Review Status, Review Reason"]
+        return [], [f"Missing required columns: {', '.join(sorted(missing))}. Expected: Date, Chanel (or Channel), Customer Name, Mobile Number, Car Type, Product Type, Location, State, Status, Reason, Review Status, Review Reason"]
 
     skipped_summary = 0
     for idx, row in df_raw.iterrows():

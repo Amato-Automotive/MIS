@@ -10,7 +10,7 @@ from datetime import date, timedelta
 from database import get_db
 from models import Lead, UploadLog, User
 from routers.auth import get_current_user
-from services.lead_parser import parse_leads_file
+from services.lead_parser import parse_leads_file, _parse_mobile
 from services.permissions import require_module
 import uuid
 
@@ -152,29 +152,36 @@ async def upload_leads(
     # time; instead a lead already on file is updated in place and only new
     # ones are inserted. Identity = date + channel + mobile (name when there is
     # no mobile). Repeats of a key inside one file collapse to the last row.
+    # Copies of a key already stored more than once (left by uploads made
+    # before this rule) are removed, so re-uploading a month's sheet repairs
+    # that month's doubled counts.
     by_key: dict[tuple, dict] = {}
     for rec in records:
         by_key[lead_key(rec["lead_date"], rec["source"], rec["mobile_number"], rec["customer_name"])] = rec
     within_file_dupes = len(records) - len(by_key)
 
-    inserted = updated = 0
+    inserted = updated = duplicates_removed = 0
     if by_key:
         dates = [date.fromisoformat(k[0]) for k in by_key]
-        existing: dict[tuple, Lead] = {}
+        existing: dict[tuple, list[Lead]] = {}
         for lead in db.query(Lead).filter(Lead.lead_date >= min(dates), Lead.lead_date <= max(dates)):
             existing.setdefault(
-                lead_key(str(lead.lead_date), lead.source, lead.mobile_number, lead.customer_name), lead
-            )
+                lead_key(str(lead.lead_date), lead.source, _parse_mobile(lead.mobile_number), lead.customer_name), []
+            ).append(lead)
         for key, rec in by_key.items():
-            lead = existing.get(key)
-            if lead is None:
+            matches = existing.get(key)
+            if not matches:
                 db.add(Lead(id=uuid.uuid4(), upload_log_id=log.id, uploaded_by=current_user.id, **rec))
                 inserted += 1
-            else:
-                for field, value in rec.items():
-                    setattr(lead, field, value)
-                lead.upload_log_id = log.id  # type: ignore[assignment]
-                updated += 1
+                continue
+            lead, extras = matches[0], matches[1:]
+            for field, value in rec.items():
+                setattr(lead, field, value)
+            lead.upload_log_id = log.id  # type: ignore[assignment]
+            updated += 1
+            for extra in extras:
+                db.delete(extra)
+                duplicates_removed += 1
 
     info_msgs   = [e for e in errors if e.startswith("INFO:")]
     real_errors = [e for e in errors if not e.startswith("INFO:")]
@@ -194,6 +201,7 @@ async def upload_leads(
         "rows_inserted": inserted,
         "rows_updated": updated,
         "rows_duplicate_in_file": within_file_dupes,
+        "rows_duplicates_removed": duplicates_removed,
         "rows_skipped_summary": skipped,
         "rows_failed": len(real_errors),
         "errors": real_errors[:20],

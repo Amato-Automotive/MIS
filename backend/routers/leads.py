@@ -12,6 +12,8 @@ from models import Lead, UploadLog, User
 from routers.auth import get_current_user
 from services.lead_parser import parse_leads_file, _parse_mobile
 from services.permissions import require_module
+import calendar
+import re
 import uuid
 
 router = APIRouter(prefix="/leads", tags=["Leads"])
@@ -118,6 +120,13 @@ def lead_key(lead_date, source, mobile, name) -> tuple:
     return (str(lead_date), (source or "").strip().lower(), who)
 
 
+def sheet_name(filename: str | None) -> str:
+    """The sheet a file is a version of: "Leads July (1).xlsx" == "leads july.xlsx"."""
+    name = re.sub(r"\.(xlsx|xls|csv)$", "", (filename or "").strip().lower())
+    name = re.sub(r"\s*\(\d+\)\s*$", "", name)
+    return re.sub(r"\s+", " ", name).strip()
+
+
 # ── Upload ───────────────────────────────────────────────────────────────────
 @router.post("/upload")
 async def upload_leads(
@@ -167,11 +176,15 @@ async def upload_leads(
         by_key[key] = rec
     within_file_dupes = len(records) - len(by_key)
 
-    inserted = updated = duplicates_removed = 0
+    inserted = updated = duplicates_removed = stale_removed = 0
     if by_key:
         dates = [date.fromisoformat(k[0]) for k in by_key]
+        lo, hi = min(dates), max(dates)
+        lo = lo.replace(day=1)
+        hi = hi.replace(day=calendar.monthrange(hi.year, hi.month)[1])
+        in_range = db.query(Lead).filter(Lead.lead_date >= lo, Lead.lead_date <= hi).all()
         existing: dict[tuple, list[Lead]] = {}
-        for lead in db.query(Lead).filter(Lead.lead_date >= min(dates), Lead.lead_date <= max(dates)):
+        for lead in in_range:
             existing.setdefault(
                 lead_key(str(lead.lead_date), lead.source, _parse_mobile(lead.mobile_number), lead.customer_name), []
             ).append(lead)
@@ -189,6 +202,31 @@ async def upload_leads(
             for extra in extras:
                 db.delete(extra)
                 duplicates_removed += 1
+
+        # ── The newest version of a sheet is the truth for what it covers ─────
+        # A lead an EARLIER upload of this same sheet wrote, for a month and
+        # channel this file covers, that is no longer in the file, was deleted
+        # or corrected (mobile / date) in the sheet — keeping it would count a
+        # removed lead, or a corrected one twice. Leads from other sheets, and
+        # leads whose upload record is gone, are never touched.
+        this_sheet = sheet_name(filename)
+        same_sheet_logs = {
+            u.id for u in db.query(UploadLog.id, UploadLog.filename)
+            .filter(UploadLog.module == "leads", UploadLog.id != log.id)
+            if sheet_name(u.filename) == this_sheet
+        }
+        if same_sheet_logs:
+            file_months = {k[0][:7] for k in by_key}
+            file_sources = {k[1] for k in by_key}
+            for lead in in_range:
+                if (
+                    lead.upload_log_id in same_sheet_logs
+                    and str(lead.lead_date)[:7] in file_months
+                    and (lead.source or "").strip().lower() in file_sources
+                    and lead not in db.deleted
+                ):
+                    db.delete(lead)
+                    stale_removed += 1
 
     info_msgs   = [e for e in errors if e.startswith("INFO:")]
     real_errors = [e for e in errors if not e.startswith("INFO:")]
@@ -209,6 +247,7 @@ async def upload_leads(
         "rows_updated": updated,
         "rows_duplicate_in_file": within_file_dupes,
         "rows_duplicates_removed": duplicates_removed,
+        "rows_stale_removed": stale_removed,
         "rows_skipped_summary": skipped,
         "rows_failed": len(real_errors),
         "errors": real_errors[:20],

@@ -11,6 +11,7 @@ interface UploadResult {
   rows_updated?: number;
   rows_duplicate_in_file?: number;
   rows_duplicates_removed?: number;
+  rows_stale_removed?: number;
   rows_skipped_summary: number;
   rows_failed: number;
   errors: string[];
@@ -259,6 +260,11 @@ export default function LeadsUploadTab({ onUploaded }: { onUploaded?: () => void
                   {(result.rows_duplicates_removed ?? 0) > 0 && (
                     <span className="text-gray-600 font-medium">
                       🧹 {result.rows_duplicates_removed} old duplicate leads removed
+                    </span>
+                  )}
+                  {(result.rows_stale_removed ?? 0) > 0 && (
+                    <span className="text-gray-600 font-medium">
+                      ✂ {result.rows_stale_removed} leads removed (no longer in this sheet)
                     </span>
                   )}
                   {(result.rows_duplicate_in_file ?? 0) > 0 && (

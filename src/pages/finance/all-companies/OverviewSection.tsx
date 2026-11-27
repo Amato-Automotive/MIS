@@ -7,7 +7,7 @@
 // summarises. The change under a tile compares the SAME companies in both periods
 // (those with a figure in each), so a company that simply had not reported last
 // period cannot make the group look as if it grew.
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie } from "recharts";
 import { Card, EmptyState, bucketValue } from "../dashboardKit";
 import type { TrendView } from "../aggregate";
@@ -21,7 +21,7 @@ import Sparkline from "../shared/Sparkline";
 import { labelsFor, labelsUpTo, sumByLabel, toMap } from "./trends";
 import { SUCCESS_COLOR, DANGER_COLOR, NEUTRAL_COLOR } from "../format";
 
-interface Props { companies: ConsolidatedCompany[]; view: TrendView; bucket: string; prevBucket: string | null }
+interface Props { companies: ConsolidatedCompany[]; view: TrendView; bucket: string; prevBucket: string | null; groupName?: string }
 
 const TOP_N = 10;
 const shortName = (c: ConsolidatedCompany) => c.short_label || c.label;
@@ -45,7 +45,7 @@ const BUDGET_LINES = [
 const SPARK_POINTS = 7;
 
 /** A headline tile: the figure, its change on the previous period, and a sparkline of the recent periods. */
-function StatTile({ label, value, exact, delta, deltaUnit = "%", vs, accent, spark, badge }: {
+export function StatTile({ label, value, exact, delta, deltaUnit = "%", vs, accent, spark, badge }: {
   label: string; value: string; exact?: string; delta: number | null; deltaUnit?: "%" | "pts"; vs: string | null;
   accent: string; spark: number[]; badge?: { text: string; bg: string; fg: string } | null;
 }) {
@@ -73,10 +73,12 @@ function StatTile({ label, value, exact, delta, deltaUnit = "%", vs, accent, spa
   );
 }
 
-const pctOf = (v: number | null, base: number | null) => (v != null && base != null && base > 0 ? (v / base) * 100 : null);
+export const pctOf = (v: number | null, base: number | null) => (v != null && base != null && base > 0 ? (v / base) * 100 : null);
 
-export default function OverviewSection({ companies, view, bucket, prevBucket }: Props) {
+export default function OverviewSection({ companies, view, bucket, prevBucket, groupName = "The group" }: Props) {
   const eligible = useMemo(() => totalled(companies), [companies]);
+  // The Sales-to-PAT and Budget panels can be narrowed to one company; "" = all of them.
+  const [companyId, setCompanyId] = useState("");
 
   const rows = useMemo(() => eligible.map((c) => {
     const at = (s: ConsolidatedCompany["pl"]["sales"], b: string | null, kind: "flow" | "stock" = "flow") =>
@@ -146,34 +148,56 @@ export default function OverviewSection({ companies, view, bucket, prevBucket }:
   }, [ranked]);
 
   // How profit builds down from Sales: each step's size and its share of Sales.
+  const picked = companyId ? rows.find((r) => r.c.id === companyId) ?? null : null;
+  const scopeRows = picked ? [picked] : rows;
+  const scopeName = picked ? picked.c.label : groupName;
+  const fSales = sumColumn(scopeRows.map((r) => r.sales)).value;
   const funnel = [
-    { label: "Net Sales", value: sales.value, fill: SERIES_COLORS[0] },
-    { label: "Gross Margin", value: gross.value, fill: SERIES_COLORS[2] },
-    { label: "PBITDA", value: pbitda.value, fill: SERIES_COLORS[3] },
-    { label: "PAT", value: pat.value, fill: SERIES_COLORS[1] },
+    { label: "Net Sales", value: fSales, fill: SERIES_COLORS[0] },
+    { label: "Gross Margin", value: sumColumn(scopeRows.map((r) => r.gross)).value, fill: SERIES_COLORS[2] },
+    { label: "PBITDA", value: sumColumn(scopeRows.map((r) => r.pbitda)).value, fill: SERIES_COLORS[3] },
+    { label: "PAT", value: sumColumn(scopeRows.map((r) => r.pat)).value, fill: SERIES_COLORS[1] },
   ];
   const funnelMax = Math.max(1, ...funnel.map((f) => Math.abs(f.value ?? 0)));
 
   // Budget achievement for the period — over the companies that have BOTH a plan and an actual.
   const budget = useMemo(() => BUDGET_LINES.map((m) => {
-    const pairs = eligible.map((c) => {
+    const pairs = (picked ? [picked.c] : eligible).map((c) => {
       const li = c.budget?.lines.find((l) => (m.slugs as readonly string[]).includes(slugOf(l.line_key)));
       return [li ? bucketValue(li.series, "flow", view, bucket) : null,
         li ? bucketValue(c.budget!.actuals[li.line_key]?.series ?? [], "flow", view, bucket) : null];
     });
     const t = sumTogether(pairs);
     return { ...m, plan: t.values[0] ?? null, actual: t.values[1] ?? null, n: t.n };
-  }), [eligible, view, bucket]);
+  }), [eligible, view, bucket, picked]);
+
+  // Every company's own line of the story, biggest first: how much of the group's Sales it is, what it keeps
+  // at each step, whether it is on budget — the four panels above, one row per company.
+  const breakdown = useMemo(() => [...rows]
+    .sort((a, b) => (b.sales ?? -Infinity) - (a.sales ?? -Infinity))
+    .map((r) => {
+      const m = netPatMargin(r.sales, r.pat);
+      const li = r.c.budget?.lines.find((l) => (BUDGET_LINES[0].slugs as readonly string[]).includes(slugOf(l.line_key)));
+      const plan = li ? bucketValue(li.series, "flow", view, bucket) : null;
+      const act = li ? bucketValue(r.c.budget!.actuals[li.line_key]?.series ?? [], "flow", view, bucket) : null;
+      return {
+        id: r.c.id, name: shortName(r.c), full: r.c.label, sales: r.sales, pat: r.pat,
+        share: r.sales != null && r.sales > 0 && salesTotal > 0 ? (r.sales / salesTotal) * 100 : null,
+        grossPct: pctOf(r.gross, r.sales), pbitdaPct: pctOf(r.pbitda, r.sales),
+        margin: m, band: classifyMargin(m),
+        budgetPct: plan != null && act != null && plan > 0 ? (act / plan) * 100 : null,
+      };
+    }), [rows, view, bucket, salesTotal]);
 
   // How the companies sit against the PAT-margin bands the page classifies by.
   const bandMix = useMemo(() => {
-    const counts = new Map<string, number>(MARGIN_BANDS.map((b) => [b.key, 0]));
+    const names = new Map<string, { name: string; full: string }[]>(MARGIN_BANDS.map((b) => [b.key, []]));
     let classified = 0;
     for (const r of rows) {
       const b = classifyMargin(netPatMargin(r.sales, r.pat));
-      if (b) { counts.set(b.key, (counts.get(b.key) ?? 0) + 1); classified++; }
+      if (b) { names.get(b.key)!.push({ name: shortName(r.c), full: r.c.label }); classified++; }
     }
-    return { classified, bands: MARGIN_BANDS.map((b) => ({ ...b, count: counts.get(b.key) ?? 0 })) };
+    return { classified, bands: MARGIN_BANDS.map((b) => ({ ...b, count: names.get(b.key)!.length, members: names.get(b.key)! })) };
   }, [rows]);
 
   // Things worth a look this period, worst first.
@@ -226,6 +250,13 @@ export default function OverviewSection({ companies, view, bucket, prevBucket }:
       </div>
     );
   };
+  const picker = (
+    <select value={picked ? companyId : ""} onChange={(e) => setCompanyId(e.target.value)} aria-label="Company"
+      className="no-print text-[11px] font-semibold text-gray-700 bg-white border border-[#EAE3D6] rounded-lg px-2 py-1 max-w-[11rem]">
+      <option value="">All companies</option>
+      {rows.map((r) => <option key={r.c.id} value={r.c.id}>{r.c.label}</option>)}
+    </select>
+  );
   const chip = (v: number | null, color: string, fg: string) =>
     (v == null ? null : { text: `${v.toFixed(1)}%`, bg: color, fg });
 
@@ -250,17 +281,17 @@ export default function OverviewSection({ companies, view, bucket, prevBucket }:
           delta={change("nwc", "pNwc")} vs={vs} accent={SERIES_COLORS[6]} spark={sparks.nwc} />
       </div>
       <p className="text-[11px] text-gray-500 -mt-1">
-        Group totals for <b>{bucket || "the period"}</b> over the {sales.n} of {rows.length} companies that reported Sales; roll-ups are left out.
+        {groupName} totals for <b>{bucket || "the period"}</b> over the {sales.n} of {rows.length} companies that reported Sales; roll-ups are left out.
         The small chip is the share of Sales. Each change compares the same companies in both periods; the line shows the last {SPARK_POINTS} periods.
         Net Working Capital is the position at the period's close.
       </p>
 
       {/* Profit build-down | share of sales | budget */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card title="From Sales to PAT" note="Each step of the group's profit, and what share of Sales it keeps.">
+        <Card title="From Sales to PAT" right={picker} note={`Each step of ${scopeName}'s profit, and what share of Sales it keeps.`}>
           <div className="flex flex-col gap-3 mt-2">
             {funnel.map((f) => {
-              const pct = pctOf(f.value, sales.value);
+              const pct = pctOf(f.value, fSales);
               return (
                 <div key={f.label}>
                   <div className="flex items-baseline justify-between text-[12px] mb-1">
@@ -279,7 +310,7 @@ export default function OverviewSection({ companies, view, bucket, prevBucket }:
           </div>
         </Card>
 
-        <Card title="Share of Sales" note={`How ${bucket || "the period"}'s Sales splits across companies.`}>
+        <Card title="Share of Sales" note={`How ${bucket || "the period"}'s Sales splits across ${groupName} companies.`}>
           {share.length === 0 ? <EmptyState>No Sales reported for this period.</EmptyState> : (
             <div className="flex items-center gap-3">
               <div className="relative shrink-0" style={{ width: 150, height: 150 }}>
@@ -296,12 +327,12 @@ export default function OverviewSection({ companies, view, bucket, prevBucket }:
                   <span className="text-[13px] font-bold text-gray-800">{fmtMoney(sales.value)}</span>
                 </div>
               </div>
-              <ul className="flex-1 min-w-0 flex flex-col gap-1">
-                {share.map((d) => (
-                  <li key={d.name} className="flex items-center gap-2 text-[11px]" title={d.full}>
-                    <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: d.fill }} />
-                    <span className="truncate text-gray-700">{d.name}</span>
-                    <span className="ml-auto tabular-nums font-semibold text-gray-800">{salesTotal > 0 ? ((d.value / salesTotal) * 100).toFixed(0) : "—"}%</span>
+              <ul className="flex-1 min-w-0 flex flex-col gap-1 max-h-[150px] overflow-y-auto pr-1">
+                {ranked.map((r, i) => (
+                  <li key={r.c.id} className="flex items-center gap-2 text-[11px]" title={r.c.label}>
+                    <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: i < 6 ? SERIES_COLORS[i] : "#B8B2A6" }} />
+                    <span className="truncate text-gray-700">{shortName(r.c)}</span>
+                    <span className="ml-auto tabular-nums font-semibold text-gray-800">{salesTotal > 0 ? (((r.sales as number) / salesTotal) * 100).toFixed(1) : "—"}%</span>
                   </li>
                 ))}
               </ul>
@@ -309,7 +340,8 @@ export default function OverviewSection({ companies, view, bucket, prevBucket }:
           )}
         </Card>
 
-        <Card title="Budget achievement" note={`Actual against plan for ${bucket || "the period"}, over the companies that have both.`}>
+        <Card title="Budget achievement" right={picker}
+          note={picked ? `${picked.c.label}'s actual against plan for ${bucket || "the period"}.` : `Actual against plan for ${bucket || "the period"}, over the companies that have both.`}>
           <div className="flex flex-col gap-3 mt-2">
             {budget.map((b) => {
               const pct = b.plan != null && b.actual != null && b.plan > 0 ? (b.actual / b.plan) * 100 : null;
@@ -329,10 +361,68 @@ export default function OverviewSection({ companies, view, bucket, prevBucket }:
                 </div>
               );
             })}
-            <p className="text-[11px] text-gray-500">{budget[0].n > 0 ? `${budget[0].n} companies have a Revenue budget and actual.` : "No company has a budget for this period."}</p>
+            <p className="text-[11px] text-gray-500">{budget[0].n > 0 ? (picked ? "Revenue budget and actual are both in this company's sheet." : `${budget[0].n} companies have a Revenue budget and actual.`) : (picked ? "This company has no budget for this period." : "No company has a budget for this period.")}</p>
           </div>
         </Card>
       </div>
+
+      {/* One row per company: the four panels above, company by company */}
+      <Card title="Breakdown by company" note={`Each company's ${bucket || "period"} on one line — its share of Sales, what it keeps at each step, its margin band and whether Revenue is on budget.`}>
+        <div className="overflow-x-auto -mx-1">
+          <table className="w-full min-w-[820px]">
+            <thead>
+              <tr className="border-b border-[#EAE3D6] bg-[#FAF7F1] text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                <th className="px-3 py-2 text-left">Company</th>
+                <th className="px-3 py-2 text-right">Sales</th>
+                <th className="px-3 py-2 text-left w-[160px]">Share of Sales</th>
+                <th className="px-3 py-2 text-right">Gross %</th>
+                <th className="px-3 py-2 text-right">PBITDA %</th>
+                <th className="px-3 py-2 text-right">PAT</th>
+                <th className="px-3 py-2 text-center">PAT margin</th>
+                <th className="px-3 py-2 text-left w-[150px]">Revenue vs budget</th>
+              </tr>
+            </thead>
+            <tbody>
+              {breakdown.map((r, i) => {
+                const bc = r.budgetPct == null ? "#9CA3AF" : r.budgetPct >= 100 ? SUCCESS_COLOR : r.budgetPct >= 90 ? "#B08400" : DANGER_COLOR;
+                return (
+                  <tr key={r.id} className={`border-b border-[#F3EEE4] ${i % 2 ? "bg-[#FCFBF8]" : ""}`}>
+                    <td className="px-3 py-2 text-[12px] font-semibold text-gray-800" title={r.full}>{r.name}</td>
+                    <td className="px-3 py-2 text-right text-[12px] font-semibold tabular-nums text-gray-800" title={r.sales != null ? formatINR(r.sales) : undefined}>{fmtMoney(r.sales)}</td>
+                    <td className="px-3 py-2">
+                      {r.share == null ? <span className="text-gray-400 text-[11px]">—</span> : (
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden"><div className="h-full rounded-full" style={{ width: `${Math.min(100, r.share)}%`, background: SERIES_COLORS[0] }} /></div>
+                          <span className="w-10 text-right text-[11px] tabular-nums text-gray-700">{r.share.toFixed(1)}%</span>
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right text-[12px] tabular-nums text-gray-700">{r.grossPct == null ? "—" : `${r.grossPct.toFixed(1)}%`}</td>
+                    <td className="px-3 py-2 text-right text-[12px] tabular-nums text-gray-700">{r.pbitdaPct == null ? "—" : `${r.pbitdaPct.toFixed(1)}%`}</td>
+                    <td className="px-3 py-2 text-right text-[12px] font-semibold tabular-nums" style={{ color: r.pat == null ? "#9CA3AF" : r.pat >= 0 ? "#1F2937" : DANGER_COLOR }}>{fmtMoney(r.pat)}</td>
+                    <td className="px-3 py-2 text-center whitespace-nowrap">
+                      {r.band && r.margin != null ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="text-[12px] font-bold tabular-nums text-gray-800">{(r.margin * 100).toFixed(1)}%</span>
+                          <span className="text-[10px] font-bold rounded px-1.5 py-0.5" style={{ background: r.band.bg, color: r.band.fg }}>{r.band.label}</span>
+                        </span>
+                      ) : <span className="text-gray-400 text-[11px]">—</span>}
+                    </td>
+                    <td className="px-3 py-2">
+                      {r.budgetPct == null ? <span className="text-gray-400 text-[11px]">no budget</span> : (
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden"><div className="h-full rounded-full" style={{ width: `${Math.min(100, r.budgetPct)}%`, background: bc }} /></div>
+                          <span className="w-9 text-right text-[11px] font-bold tabular-nums" style={{ color: bc }}>{r.budgetPct.toFixed(0)}%</span>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
 
       {/* Leaders | needs attention + margin bands */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -377,11 +467,18 @@ export default function OverviewSection({ companies, view, bucket, prevBucket }:
             {bandMix.classified === 0 ? <EmptyState>Nothing to classify yet.</EmptyState> : (
               <div className="flex flex-col gap-2 mt-1">
                 {bandMix.bands.map((b) => (
-                  <div key={b.key} className="flex items-center gap-2">
+                  <div key={b.key} className="flex items-start gap-2">
                     <span className="w-[72px] shrink-0 text-[11px] font-bold rounded-md px-1.5 py-0.5 text-center"
                       style={{ background: b.bg, color: b.fg }} title={b.range}>{b.label}</span>
-                    <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
-                      <div className="h-full rounded-full" style={{ width: `${(b.count / bandMix.classified) * 100}%`, background: b.bg }} />
+                    <div className="flex-1 min-w-0">
+                      <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                        <div className="h-full rounded-full" style={{ width: `${(b.count / bandMix.classified) * 100}%`, background: b.bg }} />
+                      </div>
+                      {b.members.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-gray-600 leading-tight">
+                          {b.members.map((m) => <span key={m.full} title={m.full}>{m.name}</span>)}
+                        </div>
+                      )}
                     </div>
                     <span className="w-6 text-right text-[12px] font-semibold tabular-nums text-gray-700">{b.count}</span>
                   </div>

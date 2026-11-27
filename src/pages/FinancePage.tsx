@@ -7,6 +7,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/components/ui/Toast";
 import Select from "@/components/ui/Select";
 import BalanceSheetView from "@/pages/finance/BalanceSheetView";
+import CompanyHighlights from "@/pages/finance/CompanyHighlights";
 import ProfitLossView from "@/pages/finance/ProfitLossView";
 import PlantOpsView from "@/pages/finance/PlantOpsView";
 import BudgetView from "@/pages/finance/BudgetView";
@@ -39,7 +40,7 @@ interface SyncHistoryItem {
   id: string; rows_total: number; rows_inserted: number; rows_updated: number;
   rows_failed: number; rows_deleted: number; status: string; synced_at: string;
 }
-type Statement = "balance_sheet" | "profit_loss" | "plant_ops" | "cash_flow" | "budget" | "unit_economics";
+type Statement = "highlights" | "balance_sheet" | "profit_loss" | "plant_ops" | "cash_flow" | "budget" | "unit_economics";
 type Tab = Statement | "sheets";
 
 export default function FinancePage() {
@@ -51,7 +52,7 @@ export default function FinancePage() {
   const [sources, setSources] = useState<SheetSourceItem[]>([]);
   const companyGroups = useCompanyGroups();
   const [selectedId, setSelectedId] = useState<string>("");
-  const [activeTab, setActiveTab] = useState<Tab>("balance_sheet");
+  const [activeTab, setActiveTab] = useState<Tab>("highlights");
   const [refreshNonce, setRefreshNonce] = useState(0); // bumped after a sync to refetch the active view
 
   // Once the page's own company selector scrolls out of view, a compact copy of
@@ -294,7 +295,7 @@ export default function FinancePage() {
   const companyLabel = isConsolidated ? "ALL COMPANIES" : (sources.find((s) => s.id === selectedId)?.label ?? "");
   const statementLabel = isConsolidated
     ? "P&L & Balance Sheet"
-    : activeTab === "balance_sheet" ? "Balance Sheet" : activeTab === "profit_loss" ? "Profit & Loss" : activeTab === "cash_flow" ? "Cash Flow"
+    : activeTab === "highlights" ? "Highlights" : activeTab === "balance_sheet" ? "Balance Sheet" : activeTab === "profit_loss" ? "Profit & Loss" : activeTab === "cash_flow" ? "Cash Flow"
     : activeTab === "budget" ? "Budget" : activeTab === "unit_economics" ? "Unit Economics" : "Plant Operations";
   const onSheetsTab = activeTab === "sheets";
 
@@ -324,6 +325,7 @@ export default function FinancePage() {
   // Sheets stays reachable either way, being config rather than a company view.
   const TABS: [Tab, string][] = [
     ...(isConsolidated ? [] : ([
+      ["highlights", "Highlights"],
       ["balance_sheet", "Balance Sheet"],
       ["profit_loss", "P&L"],
       ["cash_flow", "Cash Flow"],
@@ -358,7 +360,7 @@ export default function FinancePage() {
             <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
               {isConsolidated
                 ? "P&L · Budget · Sales · Balance Sheet · Working Capital · Ratios, every company side by side"
-                : "Balance Sheet · Profit & Loss · Cash Flow · Plant Operations · Budget · Unit Economics, per company"}
+                : "Highlights · Balance Sheet · Profit & Loss · Cash Flow · Plant Operations · Budget · Unit Economics, per company"}
             </p>
           </div>
         </div>
@@ -572,6 +574,7 @@ export default function FinancePage() {
 
       <StickyLeadingContext.Provider value={{ leading: stickyCompanySelector, top: headerH + 8 }}>
         {isConsolidated && !onSheetsTab && <ConsolidatedView refreshNonce={refreshNonce} />}
+        {!isConsolidated && selectedId && activeTab === "highlights" && <CompanyHighlights sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
         {!isConsolidated && selectedId && activeTab === "balance_sheet" && <BalanceSheetView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
         {!isConsolidated && selectedId && activeTab === "profit_loss" && <ProfitLossView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}
         {!isConsolidated && selectedId && activeTab === "cash_flow" && <CashFlowView sheetSourceId={selectedId} refreshNonce={refreshNonce} />}

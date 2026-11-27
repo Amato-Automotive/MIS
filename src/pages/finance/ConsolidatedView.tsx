@@ -199,8 +199,9 @@ export default function ConsolidatedView({ refreshNonce = 0 }: { refreshNonce?: 
         </EmptyState>
       ) : (<>
       {anchor("allco-overview")}
-      <SectionHeading accent={SOURCES_COLOR}>Overview · {effBucket || "—"}</SectionHeading>
-      <OverviewSection companies={companies} view={view} bucket={effBucket} prevBucket={prevBucket} />
+      <SectionHeading accent={SOURCES_COLOR}>Overview · {group ? groupList.labelOf(group) : "All companies"} · {effBucket || "—"}</SectionHeading>
+      <OverviewSection companies={companies} view={view} bucket={effBucket} prevBucket={prevBucket}
+        groupName={group ? groupList.labelOf(group) : "All companies"} />
 
       {anchor("allco-pl")}
       <SectionHeading accent={REVENUE_COLOR}>Profit &amp; Loss · {effBucket || "—"}</SectionHeading>
